@@ -795,6 +795,8 @@ bitflags! {
         const KW_ONLY = 1 << 7;
         const SLOTS = 1 << 8   ;
         const WEAKREF_SLOT = 1 << 9;
+        /// Internal marker for classes decorated with `chalk.features.features`.
+        const CHALK_FEATURES = 1 << 10;
     }
 }
 

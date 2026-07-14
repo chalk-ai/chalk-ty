@@ -155,7 +155,9 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
             },
 
             ast::Expr::Attribute(attribute_expression) => {
-                if is_dotted_name(expression) {
+                if let Some(ty) = self.infer_chalk_feature_path_type_expression(expression) {
+                    ty
+                } else if is_dotted_name(expression) {
                     match attribute_expression.ctx {
                         ast::ExprContext::Load => {
                             let ty = self.infer_attribute_expression(attribute_expression);
@@ -945,6 +947,10 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
         slice: &ast::Expr,
         value_ty: Type<'db>,
     ) -> Type<'db> {
+        if let Some(ty) = self.infer_chalk_features_type_expression(slice, value_ty) {
+            return ty;
+        }
+
         match value_ty {
             Type::ClassLiteral(class_literal) => match class_literal.known(self.db()) {
                 Some(KnownClass::Tuple) => Type::tuple(self.infer_tuple_type_expression(subscript)),

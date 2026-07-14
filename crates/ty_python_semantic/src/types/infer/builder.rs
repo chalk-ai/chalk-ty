@@ -136,6 +136,7 @@ use ty_python_core::{ExpressionNodeKey, Statement};
 mod annotation_expression;
 mod attribute_assignment;
 mod binary_expressions;
+mod chalk;
 mod class;
 mod dict;
 mod dynamic_class;

@@ -1,7 +1,8 @@
 use crate::place::Place;
 use crate::types::{
-    CallArguments, DataclassParams, KnownClass, KnownInstanceType, MemberLookupPolicy,
-    SpecialFormType, StaticClassLiteral, SubclassOfType, Type, TypeContext, TypedDictModule,
+    CallArguments, DataclassFlags, DataclassParams, KnownClass, KnownInstanceType,
+    MemberLookupPolicy, SpecialFormType, StaticClassLiteral, SubclassOfType, Type, TypeContext,
+    TypedDictModule,
     call::CallError,
     callable::CallableFunctionProvenance,
     function::KnownFunction,
@@ -175,6 +176,14 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
         for &(decorator_ty, decorator) in decorator_types_and_nodes.iter().rev() {
             if !metadata_applies_to_original_class {
                 decorators_to_apply.push((decorator_ty, decorator, None));
+                continue;
+            }
+
+            if self.is_chalk_features_decorator(decorator_ty, decorator_call_ty(decorator)) {
+                dataclass_params = Some(DataclassParams::from_flags(
+                    db,
+                    DataclassFlags::default() | DataclassFlags::CHALK_FEATURES,
+                ));
                 continue;
             }
 
