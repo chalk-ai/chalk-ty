@@ -1562,16 +1562,20 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                     }
                 }
                 let declared_type = declared_ty.inner_type();
-                if inferred_ty.is_assignable_to(self.db(), declared_type) {
-                    if !should_preserve_inferred_binding_type(inferred_ty)
+                let (checked_declared_ty, checked_inferred_ty, preserve_inferred_ty) =
+                    self.chalk_feature_initializer_assignment(node, &declared_ty, inferred_ty);
+                if checked_inferred_ty.is_assignable_to(self.db(), checked_declared_ty) {
+                    if preserve_inferred_ty {
+                        (declared_ty, inferred_ty)
+                    } else if !should_preserve_inferred_binding_type(inferred_ty)
                         // TODO We currently can't distinguish here between "no declared type" and
                         // "declared types is `Unknown` (e.g. due to a bad annotation, missing
                         // import, etc.)". Ideally we would still prefer `Unknown` declared type,
                         // but use inferred type if there is no declared type.
                         && !matches!(declared_type, Type::Dynamic(DynamicType::Unknown))
-                        && declared_type.is_assignable_to(self.db(), inferred_ty)
+                        && checked_declared_ty.is_assignable_to(self.db(), inferred_ty)
                     {
-                        (declared_ty, declared_type)
+                        (declared_ty, checked_declared_ty)
                     } else {
                         (declared_ty, inferred_ty)
                     }
@@ -1581,12 +1585,12 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                         &self.context,
                         node,
                         definition,
-                        declared_type,
-                        inferred_ty,
+                        checked_declared_ty,
+                        checked_inferred_ty,
                     );
 
                     // if the assignment is invalid, fall back to assuming the annotation is correct
-                    (declared_ty, declared_type)
+                    (declared_ty, checked_declared_ty)
                 }
             }
         };
@@ -9332,6 +9336,10 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
 
     /// Infer the type of a [`ast::ExprAttribute`] expression, assuming a load context.
     fn infer_attribute_load(&mut self, attribute: &ast::ExprAttribute) -> Type<'db> {
+        if let Some(ty) = self.infer_chalk_feature_path_value_expression(attribute) {
+            return ty;
+        }
+
         let value_type =
             self.infer_maybe_standalone_expression(&attribute.value, TypeContext::default());
         self.infer_attribute_load_impl(attribute, value_type)

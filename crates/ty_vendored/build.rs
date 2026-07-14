@@ -17,6 +17,10 @@ use zip::write::{SimpleFileOptions, ZipWriter};
 const TYPESHED_SOURCE_DIR: &str = "vendor/typeshed";
 const TY_EXTENSIONS_STUBS: &[(&str, &str)] = &[
     (
+        "ty_chalk_extensions/__init__.pyi",
+        "stdlib/ty_chalk_extensions/__init__.pyi",
+    ),
+    (
         "ty_extensions/__init__.pyi",
         "stdlib/ty_extensions/__init__.pyi",
     ),
@@ -74,6 +78,7 @@ fn write_zipped_typeshed_to(writer: File) -> ZipResult<File> {
             // Patch the VERSIONS file to make `ty_extensions` available
             if normalized_relative_path == "stdlib/VERSIONS" {
                 writeln!(&mut zip, "ty_extensions: 3.0-")?;
+                writeln!(&mut zip, "ty_chalk_extensions: 3.0-")?;
             }
         } else if !normalized_relative_path.is_empty() {
             // Only if not root! Avoids path spec / warning

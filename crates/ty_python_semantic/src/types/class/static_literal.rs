@@ -2113,7 +2113,7 @@ impl<'db> StaticClassLiteral<'db> {
         let dataclass_kw_only_default = field_policy
             .is_dataclass_like()
             .then(|| self.has_dataclass_param(db, field_policy, DataclassFlags::KW_ONLY));
-        let chalk_fields_are_optional = self
+        let is_chalk_features_class = self
             .dataclass_params(db)
             .is_some_and(|params| params.flags(db).contains(DataclassFlags::CHALK_FEATURES));
         let mut kw_only_sentinel_field_seen = false;
@@ -2196,7 +2196,7 @@ impl<'db> StaticClassLiteral<'db> {
                     converter = field.converter(db);
                     strict = field.strict(db);
                 }
-                if chalk_fields_are_optional && default_ty.is_none() {
+                if is_chalk_features_class && default_ty.is_none() {
                     default_ty = Some(Type::unknown());
                 }
 
@@ -2237,8 +2237,13 @@ impl<'db> StaticClassLiteral<'db> {
                     }
                 };
 
+                let declared_ty = attr_ty.apply_optional_specialization(db, specialization);
                 let mut field = Field {
-                    declared_ty: attr_ty.apply_optional_specialization(db, specialization),
+                    declared_ty: if is_chalk_features_class {
+                        declared_ty.chalk_feature_value_type(db, self.file(db))
+                    } else {
+                        declared_ty
+                    },
                     kind,
                     first_declaration,
                 };

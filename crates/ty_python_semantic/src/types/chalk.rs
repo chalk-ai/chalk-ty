@@ -1,10 +1,42 @@
+use ruff_db::files::File;
+use ty_module_resolver::{ModuleName, resolve_module};
+
 use super::class::{CodeGeneratorKind, FieldKind};
 use super::instance::SynthesizedProtocolKind;
 use super::{DataclassFlags, Type};
 use crate::db::Db;
-use crate::place::{DefinedPlace, Definedness, Place, PlaceAndQualifiers};
+use crate::place::{DefinedPlace, Definedness, Place, PlaceAndQualifiers, imported_symbol};
+
+const CHALK_FEATURES_MODULE: &str = "chalk.features";
 
 impl<'db> Type<'db> {
+    pub(super) fn chalk_feature_value_type(self, db: &'db dyn Db, file: File) -> Type<'db> {
+        if self
+            .nominal_class(db)
+            .is_none_or(|class| class.name(db) != "Primary")
+        {
+            return self;
+        }
+        let Some(module_name) = ModuleName::new_static(CHALK_FEATURES_MODULE) else {
+            return self;
+        };
+        let Some(module) = resolve_module(db, file, &module_name) else {
+            return self;
+        };
+        let Some(Type::ClassLiteral(primary)) =
+            imported_symbol(db, module.file(db), "Primary", None).ignore_possibly_undefined()
+        else {
+            return self;
+        };
+        let Some(specialization) = primary
+            .as_static()
+            .and_then(|primary| self.specialization_of(db, primary))
+        else {
+            return self;
+        };
+        specialization.types(db).first().copied().unwrap_or(self)
+    }
+
     pub(super) fn chalk_missing_return_fields(
         self,
         db: &'db dyn Db,
@@ -149,6 +181,6 @@ impl<'db> Type<'db> {
             return None;
         }
 
-        Some(self.instance_member(db, name))
+        Some(Place::bound(field.declared_ty).into())
     }
 }
