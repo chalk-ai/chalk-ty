@@ -121,6 +121,7 @@ mod bool;
 mod bound_super;
 mod call;
 mod callable;
+mod chalk;
 mod class;
 mod class_base;
 mod constraints;
@@ -3793,16 +3794,17 @@ impl<'db> Type<'db> {
                     .into();
                 }
 
-                let fallback = this.instance_member(db, name_str);
-
-                let result = this.invoke_descriptor_protocol(
-                    db,
-                    receiver,
-                    name_str,
-                    fallback,
-                    InstanceFallbackShadowsNonDataDescriptor::No,
-                    policy,
-                );
+                let result = this.chalk_instance_member(db, name_str).unwrap_or_else(|| {
+                    let fallback = this.instance_member(db, name_str);
+                    this.invoke_descriptor_protocol(
+                        db,
+                        receiver,
+                        name_str,
+                        fallback,
+                        InstanceFallbackShadowsNonDataDescriptor::No,
+                        policy,
+                    )
+                });
 
                 if result.is_class_var() && this.is_typed_dict() {
                     // `ClassVar`s on `TypedDictFallback` cannot be accessed on inhabitants of `SomeTypedDict`.

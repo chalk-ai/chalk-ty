@@ -6,6 +6,8 @@ use crate::types::generics::Specialization;
 use crate::types::signatures::Parameter;
 use crate::types::{BoundTypeVarInstance, ClassLiteral, DynamicType, Type, TypeContext};
 
+mod chalk;
+
 /// Bindings for a constructor call.
 ///
 /// The `entry` is the first-called constructor method (could be a metaclass `__call__`, a
@@ -204,8 +206,10 @@ impl<'db> ConstructorBinding<'db> {
             return return_ty;
         }
 
-        constructed_instance_type
-            .apply_optional_specialization(db, self.instance_return_specialization(db))
+        let return_ty = constructed_instance_type
+            .apply_optional_specialization(db, self.instance_return_specialization(db));
+
+        self.refine_chalk_features_return_type(db, return_ty)
     }
 
     fn first_matching_overload(&self) -> Option<&Binding<'db>> {

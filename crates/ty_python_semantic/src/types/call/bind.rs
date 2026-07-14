@@ -4260,6 +4260,7 @@ impl<'a, 'db> ArgumentMatcher<'a, 'db> {
         let matched_argument = &mut self.argument_matches[argument_index];
         matched_argument.parameters.push(MatchedParameter {
             index: parameter_index,
+            definitely_supplied: !variable_argument_length,
             argument_type,
             provenance,
         });
@@ -4652,6 +4653,7 @@ impl<'a, 'db> ArgumentMatcher<'a, 'db> {
                 let matched_argument = &mut self.argument_matches[argument_index];
                 matched_argument.parameters.push(MatchedParameter {
                     index: parameter_index,
+                    definitely_supplied: false,
                     argument_type: Some(extra_items_ty),
                     provenance: InvalidArgumentTypeProvenance::Argument,
                 });
@@ -5612,6 +5614,10 @@ pub struct MatchedArgument<'db> {
 pub struct MatchedParameter<'db> {
     /// The index of the matched parameter.
     pub index: usize,
+
+    /// Whether this argument definitely supplies the parameter. An indeterminate `*args` or
+    /// `**kwargs` argument can be matched to a parameter without proving that it is present.
+    definitely_supplied: bool,
 
     /// The type contributed by an unpacked positional or keyword argument.
     ///

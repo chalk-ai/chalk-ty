@@ -2113,6 +2113,9 @@ impl<'db> StaticClassLiteral<'db> {
         let dataclass_kw_only_default = field_policy
             .is_dataclass_like()
             .then(|| self.has_dataclass_param(db, field_policy, DataclassFlags::KW_ONLY));
+        let chalk_fields_are_optional = self
+            .dataclass_params(db)
+            .is_some_and(|params| params.flags(db).contains(DataclassFlags::CHALK_FEATURES));
         let mut kw_only_sentinel_field_seen = false;
         let mut field_declarations = Vec::new();
 
@@ -2192,6 +2195,9 @@ impl<'db> StaticClassLiteral<'db> {
                     alias.clone_from(field.alias(db));
                     converter = field.converter(db);
                     strict = field.strict(db);
+                }
+                if chalk_fields_are_optional && default_ty.is_none() {
+                    default_ty = Some(Type::unknown());
                 }
 
                 let kind = match field_policy {
@@ -2688,7 +2694,7 @@ impl<'db> StaticClassLiteral<'db> {
                     place:
                         mut declared @ Place::Defined(DefinedPlace {
                             ty: declared_ty,
-                            definedness: declaredness,
+                            definedness: mut declaredness,
                             provenance: declared_provenance,
                             ..
                         }),
@@ -2708,6 +2714,20 @@ impl<'db> StaticClassLiteral<'db> {
                         {
                             return Member::unbound();
                         }
+                    }
+
+                    let is_own_dataclass_instance_field =
+                        self.is_own_dataclass_instance_field(db, name);
+                    if is_own_dataclass_instance_field
+                        && self.dataclass_params(db).is_some_and(|params| {
+                            params.flags(db).contains(DataclassFlags::CHALK_FEATURES)
+                        })
+                    {
+                        declaredness = Definedness::PossiblyUndefined;
+                        let Place::Defined(defined) = declared else {
+                            return Member::unbound();
+                        };
+                        declared = Place::Defined(defined.with_definedness(declaredness));
                     }
 
                     // `KW_ONLY` sentinels are markers, not real instance attributes.
@@ -2758,7 +2778,7 @@ impl<'db> StaticClassLiteral<'db> {
                                     .with_qualifiers(qualifiers),
                                 }
                             }
-                        } else if self.is_own_dataclass_instance_field(db, name)
+                        } else if is_own_dataclass_instance_field
                             && declared_ty
                                 .class_member(db, "__get__".into())
                                 .place
