@@ -1807,6 +1807,25 @@ pub(super) fn report_invalid_return_type(
         return;
     };
 
+    if let Some(missing) = expected_ty.chalk_missing_return_fields(context.db(), actual_ty) {
+        let fields: Vec<_> = missing.iter().map(|path| format!("`{path}`")).collect();
+        let fields = match fields.as_slice() {
+            [field] => field.clone(),
+            [first, second] => format!("{first} and {second}"),
+            [prefix @ .., last] => format!("{}, and {last}", prefix.join(", ")),
+            [] => return,
+        };
+        let description = if missing.len() == 1 {
+            "field"
+        } else {
+            "fields"
+        };
+        let _diag = builder.into_diagnostic(format_args!(
+            "Return value is missing required {description} {fields}"
+        ));
+        return;
+    }
+
     let settings =
         DisplaySettings::from_possibly_ambiguous_types(context.db(), [expected_ty, actual_ty]);
     let return_type_span = context.span(return_type_range);

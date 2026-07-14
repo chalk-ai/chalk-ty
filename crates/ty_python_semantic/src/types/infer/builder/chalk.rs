@@ -62,10 +62,7 @@ impl<'db> FeatureShape<'db> {
             .into_iter()
             .map(|(name, shape)| (name, shape.member_type(db)))
             .collect();
-        Type::protocol_with_readonly_members(
-            db,
-            members.iter().map(|(name, ty)| (name.as_str(), *ty)),
-        )
+        Type::chalk_features_protocol(db, members.iter().map(|(name, ty)| (name.as_str(), *ty)))
     }
 }
 

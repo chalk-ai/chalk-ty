@@ -30,7 +30,7 @@ use crate::types::{
     FindLegacyTypeVarsVisitor, LiteralValueTypeKind, TypeContext, TypeMapping, VarianceInferable,
 };
 use crate::{Db, FxOrderSet};
-pub(super) use synthesized_protocol::SynthesizedProtocolType;
+pub(super) use synthesized_protocol::{SynthesizedProtocolKind, SynthesizedProtocolType};
 use ty_python_core::definition::Definition;
 
 impl<'db> Type<'db> {
@@ -152,6 +152,18 @@ impl<'db> Type<'db> {
     {
         Self::ProtocolInstance(ProtocolInstanceType::synthesized(
             SynthesizedProtocolType::new(ProtocolInterface::with_property_members(db, members)),
+        ))
+    }
+
+    /// Synthesize the structural return type represented by `chalk.features.Features[...]`.
+    pub(super) fn chalk_features_protocol<'a, M>(db: &'db dyn Db, members: M) -> Self
+    where
+        M: IntoIterator<Item = (&'a str, Type<'db>)>,
+    {
+        Self::ProtocolInstance(ProtocolInstanceType::synthesized(
+            SynthesizedProtocolType::chalk_features(ProtocolInterface::with_property_members(
+                db, members,
+            )),
         ))
     }
 
@@ -770,6 +782,13 @@ pub(super) fn walk_protocol_instance_type<'db, V: super::visitor::TypeVisitor<'d
 }
 
 impl<'db> ProtocolInstanceType<'db> {
+    pub(super) fn synthesized_kind(self) -> Option<SynthesizedProtocolKind> {
+        match self.inner {
+            Protocol::Synthesized(synthesized) => Some(synthesized.kind()),
+            Protocol::FromClass(_) => None,
+        }
+    }
+
     /// Return `true` if this is the standard-library `Hashable` protocol.
     pub(super) fn is_hashable(self, db: &'db dyn Db) -> bool {
         self.to_nominal_instance()
@@ -987,13 +1006,30 @@ mod synthesized_protocol {
     use crate::{Db, FxOrderSet};
     use ty_python_core::definition::Definition;
 
+    #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, salsa::Update, get_size2::GetSize)]
+    pub(in crate::types) enum SynthesizedProtocolKind {
+        General,
+        ChalkFeatures,
+    }
+
     /// A "synthesized" protocol type that is dissociated from a class definition in source code.
     #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, salsa::Update, get_size2::GetSize)]
-    pub(in crate::types) struct SynthesizedProtocolType<'db>(ProtocolInterface<'db>);
+    pub(in crate::types) struct SynthesizedProtocolType<'db>(
+        ProtocolInterface<'db>,
+        SynthesizedProtocolKind,
+    );
 
     impl<'db> SynthesizedProtocolType<'db> {
         pub(super) fn new(interface: ProtocolInterface<'db>) -> Self {
-            Self(interface)
+            Self(interface, SynthesizedProtocolKind::General)
+        }
+
+        pub(super) fn chalk_features(interface: ProtocolInterface<'db>) -> Self {
+            Self(interface, SynthesizedProtocolKind::ChalkFeatures)
+        }
+
+        pub(in crate::types) fn kind(self) -> SynthesizedProtocolKind {
+            self.1
         }
 
         pub(super) fn apply_type_mapping_impl<'a>(
@@ -1006,6 +1042,7 @@ mod synthesized_protocol {
             Self(
                 self.0
                     .apply_type_mapping_impl(db, type_mapping, tcx, visitor),
+                self.1,
             )
         }
 
@@ -1032,6 +1069,7 @@ mod synthesized_protocol {
         ) -> Option<Self> {
             Some(Self(
                 self.0.recursive_type_normalized_impl(db, div, nested)?,
+                self.1,
             ))
         }
     }

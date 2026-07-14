@@ -33,13 +33,10 @@ impl<'db> ConstructorBinding<'db> {
             .map(|(_, specialization)| specialization);
         let fields = class.fields(db, specialization, field_policy);
 
-        let mut overloads = self.callable().matching_overloads();
-        let Some((_, overload)) = overloads.next() else {
+        let [overload] = self.callable().overloads() else {
             return return_ty;
         };
-        if overloads.next().is_some() {
-            return return_ty;
-        }
+        let recover_from_call_error = !overload.errors().is_empty();
 
         let mut members = Vec::new();
         for (index, (parameter, parameter_ty)) in overload
@@ -78,7 +75,14 @@ impl<'db> ConstructorBinding<'db> {
                 continue;
             }
 
-            members.push((name.clone(), *parameter_ty));
+            members.push((
+                name.clone(),
+                if recover_from_call_error {
+                    Type::unknown()
+                } else {
+                    *parameter_ty
+                },
+            ));
         }
 
         if members.is_empty() {
