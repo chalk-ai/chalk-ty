@@ -15,6 +15,8 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::{any::Any, path::PathBuf};
 
+const MAX_PYTHON_SOURCE_BYTES: u64 = 1_000_000;
+
 /// A system implementation that uses the OS file system.
 #[derive(Debug, Clone)]
 pub struct OsSystem {
@@ -89,7 +91,19 @@ impl System for OsSystem {
     }
 
     fn read_to_string(&self, path: &SystemPath) -> Result<String> {
-        std::fs::read_to_string(path.as_std_path())
+        let path = path.as_std_path();
+        if path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| matches!(extension, "py" | "pyi"))
+            && path
+                .metadata()
+                .is_ok_and(|metadata| metadata.len() > MAX_PYTHON_SOURCE_BYTES)
+        {
+            return Ok("# chalk-ty stubbed oversized Python source\n".to_string());
+        }
+
+        std::fs::read_to_string(path)
     }
 
     fn read_to_notebook(&self, path: &SystemPath) -> std::result::Result<Notebook, NotebookError> {
