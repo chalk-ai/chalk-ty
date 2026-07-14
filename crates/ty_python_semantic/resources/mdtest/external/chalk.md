@@ -2,40 +2,6 @@
 
 ## Symbolic feature paths
 
-`chalk/features.pyi`:
-
-```py
-from typing import Any, Callable, Generic, TypeVar
-
-_T = TypeVar("_T")
-
-class Underscore:
-    def __getattr__(self, name: str) -> Any: ...
-    def __getitem__(self, key: Any) -> Underscore: ...
-
-class UnderscoreRoot(Underscore):
-    @property
-    def chalk_window(self) -> int: ...
-
-_: UnderscoreRoot
-
-class DataFrame(Generic[_T]): ...
-class Primary(Generic[_T]): ...
-
-def features(cls: type[_T]) -> type[_T]: ...
-def has_many(join: Callable[[], Any]) -> Any: ...
-```
-
-`chalk/streams.pyi`:
-
-```py
-from typing import Generic, TypeVar
-
-_T = TypeVar("_T")
-
-class Windowed(Generic[_T]): ...
-```
-
 `chalk/reexports.pyi`:
 
 ```py
@@ -45,10 +11,13 @@ from chalk.features import _ as feature
 `main.py`:
 
 ```py
+from datetime import datetime
+
 from chalk.features import DataFrame, Primary, Underscore, _, features, has_many
 from chalk.features import _ as feature
 from chalk.reexports import feature as reexported_feature
 from chalk.streams import Windowed
+import chalk.functions as F
 
 @features
 class Account:
@@ -96,8 +65,19 @@ class User(Base):
     divided_count: float | None = _.HAS_ITIN["all"] / _.HAS_SSN_MATCH_DOB["all"]
     floor_divided_count: int | None = _.HAS_ITIN["all"] // _.HAS_SSN_MATCH_DOB["all"]
     floor_divided_float: float | None = _.HAS_ITIN["all"] // _.FLOAT_VALUE["all"]
+    conditional_method: int | None = _.if_then_else(
+        _.HAS_ITIN["all"] > 0, _.HAS_ITIN["all"], 0
+    )
+    conditional_function: str | None = F.if_then_else(
+        _.HAS_ITIN["all"] > 0, _.email, None
+    )
+    nested_conditional: int | None = F.if_then_else(
+        _.HAS_ITIN["all"] > 0,
+        F.if_then_else(_.HAS_SSN_MATCH_DOB["all"] > 0, 1, 0),
+        None,
+    )
     combined_match: bool | None = (_.HAS_ITIN["all"] > 0) & (_.HAS_SSN_MATCH_DOB["all"] > 0)
-    normal_underscore_member: int = _.chalk_window
+    normal_underscore_member: datetime = _.chalk_window
     record_email: str = _.standardized_email
 
     bad: int = _.email  # error: [invalid-assignment] "Object of type `str` is not assignable to `int`"
@@ -105,7 +85,7 @@ class User(Base):
 
     reveal_type(_.email)  # revealed: Resolved[str]
     reveal_type(_.primary_email)  # revealed: Resolved[str]
-    reveal_type(_.chalk_window)  # revealed: int
+    reveal_type(_.chalk_window)  # revealed: datetime
     reveal_type(_.standardized_national_id)  # revealed: Resolved[bytes]
     reveal_type(_.HAS_ITIN["all"] + _.HAS_SSN_MATCH_DOB["all"])  # revealed: Resolved[int]
     reveal_type(_.HAS_ITIN["all"] + 1)  # revealed: Resolved[int]
@@ -120,6 +100,9 @@ class User(Base):
     reveal_type(_.HAS_ITIN["all"] // _.HAS_SSN_MATCH_DOB["all"])  # revealed: Resolved[int]
     reveal_type(1.0 // _.HAS_ITIN["all"])  # revealed: Resolved[float]
     reveal_type(_.HAS_ITIN["all"] // _.FLOAT_VALUE["all"])  # revealed: Resolved[float]
+    reveal_type(_.if_then_else(_.HAS_ITIN["all"] > 0, _.HAS_ITIN["all"], 0))  # revealed: Resolved[int]
+    reveal_type(F.if_then_else(_.HAS_ITIN["all"] > 0, _.email, None))  # revealed: Resolved[str | None]
+    reveal_type(F.if_then_else(_.HAS_ITIN["all"] > 0, F.if_then_else(_.HAS_SSN_MATCH_DOB["all"] > 0, 1, 0), None))  # revealed: Resolved[Literal[1, 0] | None]
     reveal_type(_.HAS_ITIN["all"] > 0)  # revealed: Resolved[bool]
     reveal_type((_.HAS_ITIN["all"] > 0) & (_.HAS_SSN_MATCH_DOB["all"] > 0))  # revealed: Resolved[bool]
     reveal_type(True & (_.HAS_ITIN["all"] > 0))  # revealed: Resolved[bool]

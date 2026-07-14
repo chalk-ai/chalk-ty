@@ -15,7 +15,32 @@ use zip::result::ZipResult;
 use zip::write::{SimpleFileOptions, ZipWriter};
 
 const TYPESHED_SOURCE_DIR: &str = "vendor/typeshed";
-const TY_EXTENSIONS_STUBS: &[(&str, &str)] = &[
+const ADDITIONAL_STUBS: &[(&str, &str)] = &[
+    ("chalk/__init__.pyi", "stdlib/chalk/__init__.pyi"),
+    (
+        "chalk/features/__init__.pyi",
+        "stdlib/chalk/features/__init__.pyi",
+    ),
+    (
+        "chalk/features/feature_set_decorator.pyi",
+        "stdlib/chalk/features/feature_set_decorator.pyi",
+    ),
+    (
+        "chalk/features/primary.pyi",
+        "stdlib/chalk/features/primary.pyi",
+    ),
+    (
+        "chalk/features/underscore.pyi",
+        "stdlib/chalk/features/underscore.pyi",
+    ),
+    (
+        "chalk/functions/__init__.pyi",
+        "stdlib/chalk/functions/__init__.pyi",
+    ),
+    (
+        "chalk/streams/__init__.pyi",
+        "stdlib/chalk/streams/__init__.pyi",
+    ),
     (
         "ty_chalk_extensions/__init__.pyi",
         "stdlib/ty_chalk_extensions/__init__.pyi",
@@ -77,6 +102,7 @@ fn write_zipped_typeshed_to(writer: File) -> ZipResult<File> {
 
             // Patch the VERSIONS file to make `ty_extensions` available
             if normalized_relative_path == "stdlib/VERSIONS" {
+                writeln!(&mut zip, "chalk: 3.0-")?;
                 writeln!(&mut zip, "ty_extensions: 3.0-")?;
                 writeln!(&mut zip, "ty_chalk_extensions: 3.0-")?;
             }
@@ -88,8 +114,8 @@ fn write_zipped_typeshed_to(writer: File) -> ZipResult<File> {
         }
     }
 
-    // Patch typeshed and add the stubs for the `ty_extensions` package.
-    for (source, destination) in TY_EXTENSIONS_STUBS {
+    // Patch typeshed and add our extra bundled stubs.
+    for (source, destination) in ADDITIONAL_STUBS {
         println!("adding file {source} as {destination} ...");
         zip.start_file(destination, options)?;
         let mut f = File::open(source)?;

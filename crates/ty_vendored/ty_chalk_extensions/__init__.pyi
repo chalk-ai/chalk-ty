@@ -1,6 +1,6 @@
 from typing import Any, Generic, TypeVar, overload
 
-from chalk.features import Underscore
+from chalk.features.underscore import Underscore
 from chalk.streams import Windowed as _ChalkWindowed
 
 _T_co = TypeVar("_T_co", covariant=True)
@@ -19,7 +19,7 @@ class Resolved(Underscore, Generic[_T_co]):
     ) -> Resolved[float]: ...
     @overload
     def __mul__(
-        self: Resolved[float], other: int | float | Resolved[int] | Resolved[float]
+        self: Resolved[float], other: float | Resolved[int] | Resolved[float]
     ) -> Resolved[float]: ...
     @overload
     def __rmul__(self: Resolved[int], other: int | Resolved[int]) -> Resolved[int]: ...
@@ -29,23 +29,23 @@ class Resolved(Underscore, Generic[_T_co]):
     ) -> Resolved[float]: ...
     @overload
     def __rmul__(
-        self: Resolved[float], other: int | float | Resolved[int] | Resolved[float]
+        self: Resolved[float], other: float | Resolved[int] | Resolved[float]
     ) -> Resolved[float]: ...
     @overload
     def __truediv__(
-        self: Resolved[int], other: int | float | Resolved[int] | Resolved[float]
+        self: Resolved[int], other: float | Resolved[int] | Resolved[float]
     ) -> Resolved[float]: ...
     @overload
     def __truediv__(
-        self: Resolved[float], other: int | float | Resolved[int] | Resolved[float]
+        self: Resolved[float], other: float | Resolved[int] | Resolved[float]
     ) -> Resolved[float]: ...
     @overload
     def __rtruediv__(
-        self: Resolved[int], other: int | float | Resolved[int] | Resolved[float]
+        self: Resolved[int], other: float | Resolved[int] | Resolved[float]
     ) -> Resolved[float]: ...
     @overload
     def __rtruediv__(
-        self: Resolved[float], other: int | float | Resolved[int] | Resolved[float]
+        self: Resolved[float], other: float | Resolved[int] | Resolved[float]
     ) -> Resolved[float]: ...
     @overload
     def __floordiv__(
@@ -57,7 +57,7 @@ class Resolved(Underscore, Generic[_T_co]):
     ) -> Resolved[float]: ...
     @overload
     def __floordiv__(
-        self: Resolved[float], other: int | float | Resolved[int] | Resolved[float]
+        self: Resolved[float], other: float | Resolved[int] | Resolved[float]
     ) -> Resolved[float]: ...
     @overload
     def __rfloordiv__(
@@ -69,7 +69,7 @@ class Resolved(Underscore, Generic[_T_co]):
     ) -> Resolved[float]: ...
     @overload
     def __rfloordiv__(
-        self: Resolved[float], other: int | float | Resolved[int] | Resolved[float]
+        self: Resolved[float], other: float | Resolved[int] | Resolved[float]
     ) -> Resolved[float]: ...
     def __lt__(self, other: Any) -> Resolved[bool]: ...
     def __le__(self, other: Any) -> Resolved[bool]: ...
