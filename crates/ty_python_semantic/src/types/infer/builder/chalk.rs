@@ -1,6 +1,6 @@
 use ruff_db::parsed::parsed_module;
 use ruff_python_ast::{self as ast, AnyNodeRef, name::Name};
-use ty_module_resolver::{ModuleName, resolve_module};
+use ty_module_resolver::{ModuleName, file_to_module, resolve_module};
 use ty_python_core::{definition::DefinitionKind, place_table, scope::ScopeKind, use_def_map};
 
 use crate::{
@@ -17,6 +17,28 @@ use crate::{
 const CHALK_FEATURES_MODULE: &str = "chalk.features";
 const CHALK_STREAMS_MODULE: &str = "chalk.streams";
 const CHALK_EXTENSIONS_MODULE: &str = "ty_chalk_extensions";
+
+#[derive(Clone, Copy)]
+enum ChalkPathRefinement {
+    NonNone,
+    None,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ChalkFeaturePathKey<'db> {
+    root: Type<'db>,
+    members: Box<[Name]>,
+}
+
+#[derive(Clone, Default)]
+pub(super) struct ChalkRefinements<'db> {
+    paths: Vec<(ChalkFeaturePathKey<'db>, ChalkPathRefinement)>,
+}
+
+pub(super) struct ChalkIfThenElseRefinements<'db> {
+    if_true: ChalkRefinements<'db>,
+    if_false: ChalkRefinements<'db>,
+}
 
 struct FeaturePath<'ast> {
     root_expression: ast::ExprRef<'ast>,
@@ -84,6 +106,171 @@ impl<'db> FeatureShape<'db> {
 }
 
 impl<'db> TypeInferenceBuilder<'db, '_> {
+    fn chalk_feature_path_key(
+        &self,
+        path: &FeaturePath<'_>,
+        root_ty: Type<'db>,
+    ) -> Option<ChalkFeaturePathKey<'db>> {
+        let root = if self.is_chalk_features_class(root_ty) {
+            root_ty
+        } else if self.is_chalk_features_symbol(root_ty, "_") && self.in_chalk_features_class() {
+            Type::ClassLiteral(nearest_enclosing_class(self.db(), self.index, self.scope())?.into())
+        } else {
+            return None;
+        };
+
+        Some(ChalkFeaturePathKey {
+            root,
+            members: path
+                .members
+                .iter()
+                .map(|(_, name)| name.id.clone())
+                .collect(),
+        })
+    }
+
+    fn chalk_feature_path_key_from_expression(
+        &self,
+        expression: &ast::Expr,
+    ) -> Option<ChalkFeaturePathKey<'db>> {
+        let path = FeaturePath::from_expression(expression)?;
+        let mut speculative = self.speculate_without_diagnostics();
+        let root_ty = speculative.infer_name_expression(path.root);
+        speculative.chalk_feature_path_key(&path, root_ty)
+    }
+
+    fn collect_chalk_condition_refinements(
+        &self,
+        expression: &ast::Expr,
+        truthy: bool,
+        refinements: &mut ChalkRefinements<'db>,
+    ) {
+        match expression {
+            ast::Expr::Compare(compare) => {
+                let ([op], [comparator]) = (&*compare.ops, &*compare.comparators) else {
+                    return;
+                };
+                let path_expression = if comparator.is_none_literal_expr() {
+                    &*compare.left
+                } else if compare.left.is_none_literal_expr() {
+                    comparator
+                } else {
+                    return;
+                };
+                let refinement = match (op, truthy) {
+                    (ast::CmpOp::NotEq | ast::CmpOp::IsNot, true)
+                    | (ast::CmpOp::Eq | ast::CmpOp::Is, false) => ChalkPathRefinement::NonNone,
+                    (ast::CmpOp::Eq | ast::CmpOp::Is, true)
+                    | (ast::CmpOp::NotEq | ast::CmpOp::IsNot, false) => ChalkPathRefinement::None,
+                    _ => return,
+                };
+                if let Some(path) = self.chalk_feature_path_key_from_expression(path_expression) {
+                    refinements.paths.push((path, refinement));
+                }
+            }
+            ast::Expr::BinOp(binary)
+                if (truthy && binary.op == ast::Operator::BitAnd)
+                    || (!truthy && binary.op == ast::Operator::BitOr) =>
+            {
+                self.collect_chalk_condition_refinements(&binary.left, truthy, refinements);
+                self.collect_chalk_condition_refinements(&binary.right, truthy, refinements);
+            }
+            ast::Expr::BoolOp(boolean)
+                if (truthy && boolean.op == ast::BoolOp::And)
+                    || (!truthy && boolean.op == ast::BoolOp::Or) =>
+            {
+                for value in &boolean.values {
+                    self.collect_chalk_condition_refinements(value, truthy, refinements);
+                }
+            }
+            ast::Expr::UnaryOp(unary)
+                if matches!(unary.op, ast::UnaryOp::Not | ast::UnaryOp::Invert) =>
+            {
+                self.collect_chalk_condition_refinements(&unary.operand, !truthy, refinements);
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn chalk_if_then_else_refinements(
+        &self,
+        callable_type: Type<'db>,
+        arguments: &ast::Arguments,
+    ) -> Option<ChalkIfThenElseRefinements<'db>> {
+        let function = match callable_type {
+            Type::FunctionLiteral(function) => function,
+            Type::BoundMethod(method) => method.function(self.db()),
+            _ => return None,
+        };
+        if function.name(self.db()) != "if_then_else" {
+            return None;
+        }
+        let module = file_to_module(self.db(), function.file(self.db()))?;
+        if !matches!(
+            module.name(self.db()).as_str(),
+            "chalk.functions" | "chalk.features.underscore"
+        ) || !arguments.keywords.is_empty()
+            || arguments.args.iter().any(ast::Expr::is_starred_expr)
+        {
+            return None;
+        }
+        let [condition, _, _] = &*arguments.args else {
+            return None;
+        };
+
+        let mut if_true = ChalkRefinements::default();
+        let mut if_false = ChalkRefinements::default();
+        self.collect_chalk_condition_refinements(condition, true, &mut if_true);
+        self.collect_chalk_condition_refinements(condition, false, &mut if_false);
+        Some(ChalkIfThenElseRefinements { if_true, if_false })
+    }
+
+    pub(super) fn infer_chalk_if_then_else_argument<T>(
+        &mut self,
+        refinements: Option<&ChalkIfThenElseRefinements<'db>>,
+        argument_index: usize,
+        infer: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let Some(refinements) = refinements.and_then(|refinements| match argument_index {
+            1 => Some(&refinements.if_true),
+            2 => Some(&refinements.if_false),
+            _ => None,
+        }) else {
+            return infer(self);
+        };
+
+        let original_len = self.chalk_refinements.paths.len();
+        self.chalk_refinements
+            .paths
+            .extend(refinements.paths.iter().cloned());
+        let result = infer(self);
+        self.chalk_refinements.paths.truncate(original_len);
+        result
+    }
+
+    fn refine_chalk_feature_path(
+        &self,
+        path: &FeaturePath<'_>,
+        root_ty: Type<'db>,
+        mut ty: Type<'db>,
+    ) -> Type<'db> {
+        let Some(key) = self.chalk_feature_path_key(path, root_ty) else {
+            return ty;
+        };
+        for (_, refinement) in self
+            .chalk_refinements
+            .paths
+            .iter()
+            .filter(|(path, _)| path == &key)
+        {
+            ty = ty.filter_union(self.db(), |element| match refinement {
+                ChalkPathRefinement::NonNone => !element.is_none(self.db()),
+                ChalkPathRefinement::None => element.is_none(self.db()),
+            });
+        }
+        ty
+    }
+
     #[track_caller]
     fn store_chalk_expression_type(&mut self, expression: ast::ExprRef<'_>, ty: Type<'db>) {
         let previous = self.expressions.insert(expression.into(), ty);
@@ -354,6 +541,9 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
                 return None;
             };
             current = member_ty;
+            if index == last_member {
+                current = self.refine_chalk_feature_path(path, root_ty, current);
+            }
             members.push((name.id.clone(), current));
 
             if store_terminal || index != last_member {

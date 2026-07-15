@@ -17,7 +17,7 @@ class UnderscoreRoot(Underscore):
     def chalk_now(self) -> datetime: ...
     def if_then_else(
         self,
-        condition: Resolved[bool],
+        condition: Resolved[bool | None],
         if_true: _T | Resolved[_T],
         if_false: _T | Resolved[_T],
     ) -> Resolved[_T]: ...

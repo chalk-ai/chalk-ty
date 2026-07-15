@@ -350,6 +350,9 @@ pub(super) struct TypeInferenceBuilder<'db, 'ast> {
     /// The fallback type for missing expressions/bindings/declarations or recursive type inference.
     cycle_recovery: Option<Type<'db>>,
 
+    /// Chalk feature-path refinements active while inferring symbolic conditional branches.
+    chalk_refinements: chalk::ChalkRefinements<'db>,
+
     /// If the inference region refers to a definition, whether synthesized dictionary-key
     /// assignments derived from its right-hand side should be discarded.
     discards_dict_key_assignments: bool,
@@ -399,6 +402,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             deferred: VecSet::default(),
             undecorated_type: None,
             cycle_recovery: None,
+            chalk_refinements: chalk::ChalkRefinements::default(),
             discards_dict_key_assignments: false,
             dataclass_field_specifiers: SmallVec::new(),
         }
@@ -7891,6 +7895,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         // arguments after matching them to parameters, but before checking that the argument types
         // are assignable to any parameter annotations.
         let mut call_arguments = self.prepare_call_arguments(arguments);
+        let chalk_if_then_else = self.chalk_if_then_else_refinements(callable_type, arguments);
 
         // Special handling for `TypedDict` method calls
         if let ast::Expr::Attribute(ast::ExprAttribute { value, attr, .. }) = func.as_ref() {
@@ -8190,12 +8195,18 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         let bindings_result = self.infer_and_check_argument_types(
             ArgumentsIter::from_ast(arguments),
             &mut call_arguments,
-            &mut |builder, (_, expr, tcx)| {
-                if has_prepared_typed_dict_constructor {
-                    builder.get_or_infer_expression(expr, tcx)
-                } else {
-                    builder.infer_expression(expr, tcx)
-                }
+            &mut |builder, (argument_index, expr, tcx)| {
+                builder.infer_chalk_if_then_else_argument(
+                    chalk_if_then_else.as_ref(),
+                    argument_index,
+                    |builder| {
+                        if has_prepared_typed_dict_constructor {
+                            builder.get_or_infer_expression(expr, tcx)
+                        } else {
+                            builder.infer_expression(expr, tcx)
+                        }
+                    },
+                )
             },
             &mut bindings,
             call_expression_tcx,
@@ -10153,6 +10164,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             deferred,
             cycle_recovery,
             dataclass_field_specifiers: _,
+            chalk_refinements: _,
 
             // Ignored; only relevant to definition regions
             undecorated_type: _,
@@ -10244,6 +10256,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             expression_cache: _,
             reachability_cache: _,
             dataclass_field_specifiers: _,
+            chalk_refinements: _,
             typevar_binding_context: _,
             deferred_state: _,
             index: _,
@@ -10346,6 +10359,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             return_types_and_ranges: _,
             collection_use_constraints: _,
             dataclass_field_specifiers: _,
+            chalk_refinements: _,
             undecorated_type: _,
             discards_dict_key_assignments: _,
             typevar_binding_context: _,
@@ -10397,6 +10411,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             expression_cache: _,
             reachability_cache: _,
             dataclass_field_specifiers: _,
+            chalk_refinements: _,
             typevar_binding_context: _,
             deferred_state: _,
             index: _,
@@ -10535,6 +10550,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             expression_cache: _,
             reachability_cache: _,
             dataclass_field_specifiers: _,
+            chalk_refinements: _,
             typevar_binding_context: _,
             deferred_state: _,
             called_functions: _,
@@ -10592,6 +10608,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             ref reachability_cache,
             ref return_types_and_ranges,
             ref dataclass_field_specifiers,
+            ref chalk_refinements,
 
             // These fields are type inference results, but do not affect the inference of a given
             // expression.
@@ -10629,6 +10646,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         builder
             .dataclass_field_specifiers
             .clone_from(dataclass_field_specifiers);
+        builder.chalk_refinements.clone_from(chalk_refinements);
 
         builder
     }
@@ -10655,6 +10673,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             deferred,
             cycle_recovery,
             dataclass_field_specifiers: _,
+            chalk_refinements: _,
 
             // Ignored; only relevant to definition regions
             undecorated_type: _,
