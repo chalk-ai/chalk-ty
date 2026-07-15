@@ -110,6 +110,7 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
         &self,
         path: &FeaturePath<'_>,
         root_ty: Type<'db>,
+        member_count: usize,
     ) -> Option<ChalkFeaturePathKey<'db>> {
         let root = if self.is_chalk_features_class(root_ty) {
             root_ty
@@ -124,6 +125,7 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
             members: path
                 .members
                 .iter()
+                .take(member_count)
                 .map(|(_, name)| name.id.clone())
                 .collect(),
         })
@@ -136,7 +138,7 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
         let path = FeaturePath::from_expression(expression)?;
         let mut speculative = self.speculate_without_diagnostics();
         let root_ty = speculative.infer_name_expression(path.root);
-        speculative.chalk_feature_path_key(&path, root_ty)
+        speculative.chalk_feature_path_key(&path, root_ty, path.members.len())
     }
 
     fn collect_chalk_condition_refinements(
@@ -252,9 +254,10 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
         &self,
         path: &FeaturePath<'_>,
         root_ty: Type<'db>,
+        member_count: usize,
         mut ty: Type<'db>,
     ) -> Type<'db> {
-        let Some(key) = self.chalk_feature_path_key(path, root_ty) else {
+        let Some(key) = self.chalk_feature_path_key(path, root_ty, member_count) else {
             return ty;
         };
         for (_, refinement) in self
@@ -541,9 +544,7 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
                 return None;
             };
             current = member_ty;
-            if index == last_member {
-                current = self.refine_chalk_feature_path(path, root_ty, current);
-            }
+            current = self.refine_chalk_feature_path(path, root_ty, index + 1, current);
             members.push((name.id.clone(), current));
 
             if store_terminal || index != last_member {
