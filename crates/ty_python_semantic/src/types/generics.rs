@@ -2771,6 +2771,15 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
                     }
                 }
 
+                if let Some(resolved_arm) = formal.chalk_resolved_union_inference_arm(
+                    self.db,
+                    actual,
+                    self.constraints,
+                    self.inferable,
+                ) {
+                    return self.infer_map_impl(resolved_arm, actual, polarity, seen);
+                }
+
                 let mut bound_typevars = union_formal
                     .elements(self.db)
                     .iter()

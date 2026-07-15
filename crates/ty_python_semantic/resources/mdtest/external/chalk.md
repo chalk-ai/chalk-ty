@@ -17,6 +17,7 @@ from chalk.features import DataFrame, Primary, Underscore, _, features, has_many
 from chalk.features import _ as feature
 from chalk.reexports import feature as reexported_feature
 from chalk.streams import Windowed
+from chalkdf import DataFrame as ChalkDataFrame
 import chalk.functions as F
 
 @features
@@ -65,12 +66,8 @@ class User(Base):
     divided_count: float | None = _.HAS_ITIN["all"] / _.HAS_SSN_MATCH_DOB["all"]
     floor_divided_count: int | None = _.HAS_ITIN["all"] // _.HAS_SSN_MATCH_DOB["all"]
     floor_divided_float: float | None = _.HAS_ITIN["all"] // _.FLOAT_VALUE["all"]
-    conditional_method: int | None = _.if_then_else(
-        _.HAS_ITIN["all"] > 0, _.HAS_ITIN["all"], 0
-    )
-    conditional_function: str | None = F.if_then_else(
-        _.HAS_ITIN["all"] > 0, _.email, None
-    )
+    conditional_method: int | None = _.if_then_else(_.HAS_ITIN["all"] > 0, _.HAS_ITIN["all"], 0)
+    conditional_function: str | None = F.if_then_else(_.HAS_ITIN["all"] > 0, _.email, None)
     nested_conditional: int | None = F.if_then_else(
         _.HAS_ITIN["all"] > 0,
         F.if_then_else(_.HAS_SSN_MATCH_DOB["all"] > 0, 1, 0),
@@ -102,7 +99,9 @@ class User(Base):
     reveal_type(_.HAS_ITIN["all"] // _.FLOAT_VALUE["all"])  # revealed: Resolved[float]
     reveal_type(_.if_then_else(_.HAS_ITIN["all"] > 0, _.HAS_ITIN["all"], 0))  # revealed: Resolved[int]
     reveal_type(F.if_then_else(_.HAS_ITIN["all"] > 0, _.email, None))  # revealed: Resolved[str | None]
-    reveal_type(F.if_then_else(_.HAS_ITIN["all"] > 0, F.if_then_else(_.HAS_SSN_MATCH_DOB["all"] > 0, 1, 0), None))  # revealed: Resolved[Literal[1, 0] | None]
+    reveal_type(
+        F.if_then_else(_.HAS_ITIN["all"] > 0, F.if_then_else(_.HAS_SSN_MATCH_DOB["all"] > 0, 1, 0), None)
+    )  # revealed: Resolved[Literal[1, 0] | None]
     reveal_type(_.HAS_ITIN["all"] > 0)  # revealed: Resolved[bool]
     reveal_type((_.HAS_ITIN["all"] > 0) & (_.HAS_SSN_MATCH_DOB["all"] > 0))  # revealed: Resolved[bool]
     reveal_type(True & (_.HAS_ITIN["all"] > 0))  # revealed: Resolved[bool]
@@ -121,6 +120,9 @@ reveal_type(User().optional_email)  # revealed: str | None
 reveal_type(User(primary_email="primary@example.com").primary_email)  # revealed: str
 reveal_type(User.emails_as_set)  # revealed: Windowed[list[str] | None]
 reveal_type(User.chalk_window)  # revealed: Resolved[str]
+
+def variadic_dataframe(value: ChalkDataFrame) -> DataFrame[User.email, User.optional_email]:
+    return value
 
 def accepts_underscore(value: Underscore) -> None: ...
 

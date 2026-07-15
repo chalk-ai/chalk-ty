@@ -1,5 +1,7 @@
 from typing import Any, Callable, Generic, TypeVar
 
+from chalkdf.dataframe import DataFrame as DataFrame
+
 from .feature_set_decorator import features as features
 from .primary import Primary as Primary
 from .underscore import (
@@ -9,10 +11,6 @@ from .underscore import (
 )
 
 _T = TypeVar("_T")
-
-class DataFrame(Generic[_T]):
-    def __getattr__(self, name: str) -> Any: ...
-    def __getitem__(self, key: Any) -> Any: ...
 
 class Features(Generic[_T]): ...
 

@@ -2,14 +2,64 @@ use ruff_db::files::File;
 use ty_module_resolver::{ModuleName, resolve_module};
 
 use super::class::{CodeGeneratorKind, FieldKind};
+use super::constraints::ConstraintSetBuilder;
+use super::generics::InferableTypeVars;
 use super::instance::SynthesizedProtocolKind;
 use super::{DataclassFlags, Type};
 use crate::db::Db;
 use crate::place::{DefinedPlace, Definedness, Place, PlaceAndQualifiers, imported_symbol};
 
 const CHALK_FEATURES_MODULE: &str = "chalk.features";
+const CHALK_EXTENSIONS_MODULE: &str = "ty_chalk_extensions";
 
 impl<'db> Type<'db> {
+    pub(super) fn chalk_resolved_union_inference_arm(
+        self,
+        db: &'db dyn Db,
+        actual: Type<'db>,
+        constraints: &ConstraintSetBuilder<'db>,
+        inferable: InferableTypeVars<'db>,
+    ) -> Option<Type<'db>> {
+        fn resolved_inner<'db>(db: &'db dyn Db, ty: Type<'db>) -> Option<Type<'db>> {
+            let instance = ty.as_nominal_instance()?;
+            if instance.class_name(db) != "Resolved"
+                || instance.class_module_name(db)?.as_str() != CHALK_EXTENSIONS_MODULE
+            {
+                return None;
+            }
+            let (_, specialization) = ty.nominal_class(db)?.static_class_literal(db)?;
+            specialization?.types(db).first().copied()
+        }
+
+        let Type::Union(union) = self else {
+            return None;
+        };
+        let [left, right] = union.elements(db) else {
+            return None;
+        };
+
+        let resolved_arm = if let (Some(typevar), Some(resolved_typevar)) = (
+            left.as_typevar(),
+            resolved_inner(db, *right).and_then(Type::as_typevar),
+        ) && typevar == resolved_typevar
+        {
+            *right
+        } else if let (Some(typevar), Some(resolved_typevar)) = (
+            right.as_typevar(),
+            resolved_inner(db, *left).and_then(Type::as_typevar),
+        ) && typevar == resolved_typevar
+        {
+            *left
+        } else {
+            return None;
+        };
+
+        (!actual
+            .when_assignable_to(db, resolved_arm, constraints, inferable)
+            .is_never_satisfied(db))
+        .then_some(resolved_arm)
+    }
+
     pub(super) fn chalk_feature_value_type(self, db: &'db dyn Db, file: File) -> Type<'db> {
         if self
             .nominal_class(db)

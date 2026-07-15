@@ -41,6 +41,8 @@ const ADDITIONAL_STUBS: &[(&str, &str)] = &[
         "chalk/streams/__init__.pyi",
         "stdlib/chalk/streams/__init__.pyi",
     ),
+    ("chalkdf/__init__.pyi", "stdlib/chalkdf/__init__.pyi"),
+    ("chalkdf/dataframe.pyi", "stdlib/chalkdf/dataframe.pyi"),
     (
         "ty_chalk_extensions/__init__.pyi",
         "stdlib/ty_chalk_extensions/__init__.pyi",
@@ -103,6 +105,7 @@ fn write_zipped_typeshed_to(writer: File) -> ZipResult<File> {
             // Patch the VERSIONS file to make `ty_extensions` available
             if normalized_relative_path == "stdlib/VERSIONS" {
                 writeln!(&mut zip, "chalk: 3.0-")?;
+                writeln!(&mut zip, "chalkdf: 3.0-")?;
                 writeln!(&mut zip, "ty_extensions: 3.0-")?;
                 writeln!(&mut zip, "ty_chalk_extensions: 3.0-")?;
             }

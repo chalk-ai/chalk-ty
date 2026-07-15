@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, TypeVar, overload
+from typing import Any, TypeVar
 
 _T = TypeVar("_T")
 
@@ -15,33 +15,11 @@ class UnderscoreRoot(Underscore):
     def chalk_window(self) -> datetime: ...
     @property
     def chalk_now(self) -> datetime: ...
-    @overload
     def if_then_else(
         self,
         condition: Resolved[bool],
-        if_true: Resolved[_T],
-        if_false: Resolved[_T],
-    ) -> Resolved[_T]: ...
-    @overload
-    def if_then_else(
-        self,
-        condition: Resolved[bool],
-        if_true: Resolved[_T],
-        if_false: _T,
-    ) -> Resolved[_T]: ...
-    @overload
-    def if_then_else(
-        self,
-        condition: Resolved[bool],
-        if_true: _T,
-        if_false: Resolved[_T],
-    ) -> Resolved[_T]: ...
-    @overload
-    def if_then_else(
-        self,
-        condition: Resolved[bool],
-        if_true: _T,
-        if_false: _T,
+        if_true: _T | Resolved[_T],
+        if_false: _T | Resolved[_T],
     ) -> Resolved[_T]: ...
 
 _: UnderscoreRoot
