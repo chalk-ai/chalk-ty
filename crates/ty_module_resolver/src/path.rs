@@ -119,6 +119,9 @@ impl ModulePath {
                         .is_directory(stdlib_root.join(relative_path)),
                 }
             }
+            SearchPathInner::VendoredThirdParty(root) => {
+                resolver.vendored().is_directory(root.join(relative_path))
+            }
         }
     }
 
@@ -167,21 +170,31 @@ impl ModulePath {
                         .exists(search_path.join(relative_path).join("__init__.pyi")),
                 }
             }
+            SearchPathInner::VendoredThirdParty(search_path) => resolver
+                .vendored()
+                .exists(search_path.join(relative_path).join("__init__.pyi")),
         }
     }
 
     /// Get the `py.typed` info for this package (not considering parent packages)
     pub(super) fn py_typed(&self, resolver: &ResolverContext) -> PyTyped {
-        let Some(py_typed_contents) = self.to_system_path().and_then(|path| {
-            if !directory_contains_file(resolver.db, &path, &["py.typed"]) {
-                return None;
-            }
-            let py_typed_path = path.join("py.typed");
-            let py_typed_file = system_path_to_file(resolver.db, py_typed_path).ok()?;
-            // If we fail to read it let's say that's like it doesn't exist
-            // (right now the difference between Untyped and Full is academic)
-            py_typed_file.read_to_string(resolver.db).ok()
-        }) else {
+        let py_typed_contents = match &*self.search_path.0 {
+            SearchPathInner::VendoredThirdParty(root) => resolver
+                .vendored()
+                .read_to_string(root.join(&self.relative_path).join("py.typed"))
+                .ok(),
+            _ => self.to_system_path().and_then(|path| {
+                if !directory_contains_file(resolver.db, &path, &["py.typed"]) {
+                    return None;
+                }
+                let py_typed_path = path.join("py.typed");
+                let py_typed_file = system_path_to_file(resolver.db, py_typed_path).ok()?;
+                // If we fail to read it let's say that's like it doesn't exist
+                // (right now the difference between Untyped and Full is academic)
+                py_typed_file.read_to_string(resolver.db).ok()
+            }),
+        };
+        let Some(py_typed_contents) = py_typed_contents else {
             return PyTyped::Untyped;
         };
         // The python typing spec says to look for "partial\n" but in the wild we've seen:
@@ -212,7 +225,8 @@ impl ModulePath {
             | SearchPathInner::StandardLibraryCustom(stdlib_root) => {
                 Some(stdlib_root.join(relative_path))
             }
-            SearchPathInner::StandardLibraryVendored(_) => None,
+            SearchPathInner::StandardLibraryVendored(_)
+            | SearchPathInner::VendoredThirdParty(_) => None,
         }
     }
 
@@ -250,6 +264,9 @@ impl ModulePath {
                         vendored_path_to_file(db, stdlib_root.join(relative_path)).ok()
                     }
                 }
+            }
+            SearchPathInner::VendoredThirdParty(root) => {
+                vendored_path_to_file(db, root.join(relative_path)).ok()
             }
         }
     }
@@ -319,7 +336,9 @@ impl ModulePath {
 
     #[must_use]
     pub(crate) fn with_py_extension(&self) -> Option<Self> {
-        if self.is_standard_library() {
+        if self.is_standard_library()
+            || matches!(&*self.search_path.0, SearchPathInner::VendoredThirdParty(_))
+        {
             return None;
         }
         let ModulePath {
@@ -458,6 +477,7 @@ enum SearchPathInner {
     FirstParty(SystemPathBuf),
     StandardLibraryCustom(SystemPathBuf),
     StandardLibraryVendored(VendoredPathBuf),
+    VendoredThirdParty(VendoredPathBuf),
     StandardLibraryReal(SystemPathBuf),
     SitePackages(SystemPathBuf),
     Editable(SystemPathBuf),
@@ -546,6 +566,14 @@ impl SearchPath {
         )))
     }
 
+    /// Create a search path for third-party stub packages bundled with ty.
+    #[must_use]
+    pub(crate) fn vendored_third_party() -> Self {
+        Self(Arc::new(SearchPathInner::VendoredThirdParty(
+            VendoredPathBuf::from("stubs"),
+        )))
+    }
+
     /// Create a new search path pointing to the real stdlib of a python install
     pub(crate) fn real_stdlib(system: &dyn System, root: SystemPathBuf) -> SearchPathResult<Self> {
         Ok(Self(Arc::new(SearchPathInner::StandardLibraryReal(
@@ -614,7 +642,9 @@ impl SearchPath {
     /// Is the module on a search path for installed third-party code?
     pub(crate) fn is_third_party(&self) -> bool {
         match &*self.0 {
-            SearchPathInner::SitePackages(_) | SearchPathInner::Editable(_) => true,
+            SearchPathInner::SitePackages(_)
+            | SearchPathInner::Editable(_)
+            | SearchPathInner::VendoredThirdParty(_) => true,
             SearchPathInner::Extra(_)
             | SearchPathInner::FirstParty(_)
             | SearchPathInner::StandardLibraryCustom(_)
@@ -659,7 +689,8 @@ impl SearchPath {
             | SearchPathInner::StandardLibraryReal(search_path)
             | SearchPathInner::SitePackages(search_path)
             | SearchPathInner::Editable(search_path) => path.strip_prefix(search_path).ok(),
-            SearchPathInner::StandardLibraryVendored(_) => None,
+            SearchPathInner::StandardLibraryVendored(_)
+            | SearchPathInner::VendoredThirdParty(_) => None,
         }
     }
 
@@ -679,7 +710,8 @@ impl SearchPath {
             | SearchPathInner::StandardLibraryReal(_)
             | SearchPathInner::SitePackages(_)
             | SearchPathInner::Editable(_) => None,
-            SearchPathInner::StandardLibraryVendored(search_path) => path
+            SearchPathInner::StandardLibraryVendored(search_path)
+            | SearchPathInner::VendoredThirdParty(search_path) => path
                 .strip_prefix(search_path)
                 .ok()
                 .map(|relative_path| ModulePath {
@@ -698,7 +730,8 @@ impl SearchPath {
             | SearchPathInner::StandardLibraryReal(ref path)
             | SearchPathInner::SitePackages(ref path)
             | SearchPathInner::Editable(ref path) => SystemOrVendoredPathRef::System(path),
-            SearchPathInner::StandardLibraryVendored(ref path) => {
+            SearchPathInner::StandardLibraryVendored(ref path)
+            | SearchPathInner::VendoredThirdParty(ref path) => {
                 SystemOrVendoredPathRef::Vendored(path)
             }
         }
@@ -728,6 +761,7 @@ impl SearchPath {
             SearchPathInner::SitePackages(_) => "site-packages",
             SearchPathInner::Editable(_) => "editable",
             SearchPathInner::StandardLibraryVendored(_) => "std-vendored",
+            SearchPathInner::VendoredThirdParty(_) => "third-party-vendored",
         }
     }
 
@@ -747,6 +781,7 @@ impl SearchPath {
             SearchPathInner::SitePackages(_) => "site-packages",
             SearchPathInner::Editable(_) => "editable install",
             SearchPathInner::StandardLibraryVendored(_) => "stdlib typeshed stubs vendored by ty",
+            SearchPathInner::VendoredThirdParty(_) => "third-party stubs vendored by ty",
         }
     }
 }
@@ -808,7 +843,8 @@ impl fmt::Display for SearchPath {
             | SearchPathInner::Editable(system_path_buf)
             | SearchPathInner::StandardLibraryReal(system_path_buf)
             | SearchPathInner::StandardLibraryCustom(system_path_buf) => system_path_buf.fmt(f),
-            SearchPathInner::StandardLibraryVendored(vendored_path_buf) => vendored_path_buf.fmt(f),
+            SearchPathInner::StandardLibraryVendored(vendored_path_buf)
+            | SearchPathInner::VendoredThirdParty(vendored_path_buf) => vendored_path_buf.fmt(f),
         }
     }
 }

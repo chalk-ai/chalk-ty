@@ -445,12 +445,18 @@ fn stub_package_index(db: &dyn Db) -> StubPackageIndex {
 }
 
 fn search_path_may_contain_stub_package(db: &dyn Db, search_path: &SearchPath) -> bool {
-    let Some(path) = search_path.as_system_path() else {
-        return false;
-    };
-
-    directory_listing(db, path)
-        .is_ok_and(|listing| listing.iter().any(|(name, _)| name.ends_with("-stubs")))
+    match search_path.as_path() {
+        SystemOrVendoredPathRef::System(path) => directory_listing(db, path)
+            .is_ok_and(|listing| listing.iter().any(|(name, _)| name.ends_with("-stubs"))),
+        SystemOrVendoredPathRef::Vendored(path) => {
+            db.vendored().read_directory(path).any(|entry| {
+                entry
+                    .path()
+                    .file_name()
+                    .is_some_and(|name| name.ends_with("-stubs"))
+            })
+        }
+    }
 }
 
 /// Get the search-paths for desperate resolution of absolute imports in this file.
@@ -571,6 +577,9 @@ pub struct SearchPaths {
     ///
     /// This can currently only be None if the `SystemPath` this points to is already in `static_paths`.
     stdlib_path: Option<SearchPath>,
+
+    /// Third-party stub packages bundled with ty. These are only used for typing resolution.
+    vendored_third_party: SearchPath,
 
     /// Path to the real stdlib, this replaces typeshed (`stdlib_path`) for goto-definition searches
     /// ([`ModuleResolveMode::Runtime`]).
@@ -749,6 +758,7 @@ impl SearchPaths {
         Ok(SearchPaths {
             static_paths,
             stdlib_path,
+            vendored_third_party: SearchPath::vendored_third_party(),
             real_stdlib_path,
             site_packages,
             typeshed_versions,
@@ -762,6 +772,7 @@ impl SearchPaths {
         Self {
             static_paths: vec![],
             stdlib_path: Some(SearchPath::vendored_stdlib()),
+            vendored_third_party: SearchPath::vendored_third_party(),
             real_stdlib_path: None,
             site_packages: vec![],
             typeshed_versions: vendored_typeshed_versions(vendored),
@@ -797,6 +808,8 @@ impl SearchPaths {
             db,
             static_paths: self.static_paths.iter(),
             stdlib_path,
+            vendored_third_party: matches!(mode, ModuleResolveMode::Typing)
+                .then_some(&self.vendored_third_party),
             dynamic_paths: None,
             mode: ModuleResolveModeIngredient::new(db, mode),
         }
@@ -874,6 +887,7 @@ pub(crate) fn dynamic_resolution_paths<'db>(
     let SearchPaths {
         static_paths,
         stdlib_path,
+        vendored_third_party: _,
         site_packages,
         typeshed_versions: _,
         real_stdlib_path,
@@ -1017,6 +1031,7 @@ pub struct SearchPathIterator<'db> {
     db: &'db dyn Db,
     static_paths: std::slice::Iter<'db, SearchPath>,
     stdlib_path: Option<&'db SearchPath>,
+    vendored_third_party: Option<&'db SearchPath>,
     dynamic_paths: Option<std::slice::Iter<'db, SearchPath>>,
     mode: ModuleResolveModeIngredient<'db>,
 }
@@ -1029,6 +1044,7 @@ impl<'db> Iterator for SearchPathIterator<'db> {
             db,
             static_paths,
             stdlib_path,
+            vendored_third_party,
             mode,
             dynamic_paths,
         } = self;
@@ -1036,6 +1052,7 @@ impl<'db> Iterator for SearchPathIterator<'db> {
         static_paths
             .next()
             .or_else(|| stdlib_path.take())
+            .or_else(|| vendored_third_party.take())
             .or_else(|| {
                 dynamic_paths
                     .get_or_insert_with(|| dynamic_resolution_paths(*db, *mode).iter())

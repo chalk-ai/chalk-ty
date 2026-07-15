@@ -15,34 +15,44 @@ use zip::result::ZipResult;
 use zip::write::{SimpleFileOptions, ZipWriter};
 
 const TYPESHED_SOURCE_DIR: &str = "vendor/typeshed";
+const ADDITIONAL_STUB_DIRECTORIES: &[&str] = &[
+    "stubs/",
+    "stubs/chalk-stubs/",
+    "stubs/chalk-stubs/features/",
+    "stubs/chalk-stubs/functions/",
+    "stubs/chalk-stubs/streams/",
+    "stubs/chalkdf-stubs/",
+];
 const ADDITIONAL_STUBS: &[(&str, &str)] = &[
-    ("chalk/__init__.pyi", "stdlib/chalk/__init__.pyi"),
+    ("chalk/__init__.pyi", "stubs/chalk-stubs/__init__.pyi"),
+    ("chalk/py.typed", "stubs/chalk-stubs/py.typed"),
     (
         "chalk/features/__init__.pyi",
-        "stdlib/chalk/features/__init__.pyi",
+        "stubs/chalk-stubs/features/__init__.pyi",
     ),
     (
         "chalk/features/feature_set_decorator.pyi",
-        "stdlib/chalk/features/feature_set_decorator.pyi",
+        "stubs/chalk-stubs/features/feature_set_decorator.pyi",
     ),
     (
         "chalk/features/primary.pyi",
-        "stdlib/chalk/features/primary.pyi",
+        "stubs/chalk-stubs/features/primary.pyi",
     ),
     (
         "chalk/features/underscore.pyi",
-        "stdlib/chalk/features/underscore.pyi",
+        "stubs/chalk-stubs/features/underscore.pyi",
     ),
     (
         "chalk/functions/__init__.pyi",
-        "stdlib/chalk/functions/__init__.pyi",
+        "stubs/chalk-stubs/functions/__init__.pyi",
     ),
     (
         "chalk/streams/__init__.pyi",
-        "stdlib/chalk/streams/__init__.pyi",
+        "stubs/chalk-stubs/streams/__init__.pyi",
     ),
-    ("chalkdf/__init__.pyi", "stdlib/chalkdf/__init__.pyi"),
-    ("chalkdf/dataframe.pyi", "stdlib/chalkdf/dataframe.pyi"),
+    ("chalkdf/__init__.pyi", "stubs/chalkdf-stubs/__init__.pyi"),
+    ("chalkdf/py.typed", "stubs/chalkdf-stubs/py.typed"),
+    ("chalkdf/dataframe.pyi", "stubs/chalkdf-stubs/dataframe.pyi"),
     (
         "ty_chalk_extensions/__init__.pyi",
         "stdlib/ty_chalk_extensions/__init__.pyi",
@@ -104,8 +114,6 @@ fn write_zipped_typeshed_to(writer: File) -> ZipResult<File> {
 
             // Patch the VERSIONS file to make `ty_extensions` available
             if normalized_relative_path == "stdlib/VERSIONS" {
-                writeln!(&mut zip, "chalk: 3.0-")?;
-                writeln!(&mut zip, "chalkdf: 3.0-")?;
                 writeln!(&mut zip, "ty_extensions: 3.0-")?;
                 writeln!(&mut zip, "ty_chalk_extensions: 3.0-")?;
             }
@@ -118,6 +126,11 @@ fn write_zipped_typeshed_to(writer: File) -> ZipResult<File> {
     }
 
     // Patch typeshed and add our extra bundled stubs.
+    for directory in ADDITIONAL_STUB_DIRECTORIES {
+        println!("adding dir {directory:?} ...");
+        zip.add_directory(*directory, options)?;
+    }
+
     for (source, destination) in ADDITIONAL_STUBS {
         println!("adding file {source} as {destination} ...");
         zip.start_file(destination, options)?;
