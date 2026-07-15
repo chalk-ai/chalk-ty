@@ -206,6 +206,47 @@ impl<'db> Type<'db> {
         (compatible && !missing.is_empty()).then_some(missing)
     }
 
+    pub(super) fn chalk_scalar_return_is_compatible(
+        self,
+        db: &'db dyn Db,
+        actual: Type<'db>,
+    ) -> bool {
+        let Type::ProtocolInstance(protocol) = self else {
+            return false;
+        };
+        if protocol.synthesized_kind() != Some(SynthesizedProtocolKind::ChalkFeatures) {
+            return false;
+        }
+
+        fn single_selected_type<'db>(db: &'db dyn Db, ty: Type<'db>) -> Option<Type<'db>> {
+            let Type::ProtocolInstance(protocol) = ty else {
+                return Some(ty);
+            };
+            if protocol.synthesized_kind() != Some(SynthesizedProtocolKind::ChalkFeatures) {
+                return Some(ty);
+            }
+
+            let mut selected = None;
+            for member in protocol.interface(db).members(db) {
+                let Place::Defined(DefinedPlace {
+                    ty: member_ty,
+                    definedness: Definedness::AlwaysDefined,
+                    ..
+                }) = ty.member(db, member.name()).place
+                else {
+                    return None;
+                };
+                let member_ty = single_selected_type(db, member_ty)?;
+                if selected.replace(member_ty).is_some() {
+                    return None;
+                }
+            }
+            selected
+        }
+
+        single_selected_type(db, self).is_some_and(|expected| actual.is_assignable_to(db, expected))
+    }
+
     pub(super) fn chalk_instance_member(
         self,
         db: &'db dyn Db,

@@ -1803,6 +1803,10 @@ pub(super) fn report_invalid_return_type(
     expected_ty: Type,
     actual_ty: Type,
 ) {
+    if expected_ty.chalk_scalar_return_is_compatible(context.db(), actual_ty) {
+        return;
+    }
+
     let Some(builder) = context.report_lint(&INVALID_RETURN_TYPE, object_range) else {
         return;
     };
