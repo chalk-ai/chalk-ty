@@ -206,7 +206,8 @@ impl<'db> Type<'db> {
         (compatible && !missing.is_empty()).then_some(missing)
     }
 
-    pub(super) fn chalk_scalar_return_is_compatible(
+    /// Return expressions for `Features[Name.field]` may have the declared type of `Name.field`.
+    pub(super) fn chalk_features_return_is_compatible(
         self,
         db: &'db dyn Db,
         actual: Type<'db>,
