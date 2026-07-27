@@ -35,6 +35,7 @@ pub(crate) enum Command {
     Check(CheckCommand),
 
     /// Start the language server
+    #[command(alias = "lsp")]
     Server,
 
     /// Display ty's version
