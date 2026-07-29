@@ -17,21 +17,26 @@ use ruff_db::diagnostic::{
 };
 use ruff_db::files::{File, FileRange};
 use ruff_db::source::source_text;
-use ruff_db::system::SystemPathBuf;
+use ruff_db::system::SystemPath;
 use serde::{Deserialize, Serialize};
+use ty_chalk::{
+    CallNoMatchReason, ChalkDiagnostic, ChalkDiagnosticSeverity, ChalkProjectInput,
+    chalk_diagnostics_for_file,
+};
 use ty_project::{Db as _, ProjectDatabase};
 
 use crate::capabilities::ResolvedClientCapabilities;
 use crate::document::{FileRangeExt, ToRangeExt};
 use crate::session::client::Client;
 use crate::session::{DocumentHandle, GlobalSettings};
-use crate::system::{AnySystemPath, file_to_uri};
+use crate::system::file_to_uri;
 use crate::{DIAGNOSTIC_NAME, Db, DiagnosticMode};
 use crate::{PositionEncoding, Session};
 
 #[derive(Debug)]
 pub(super) struct Diagnostics {
     items: Vec<ruff_db::diagnostic::Diagnostic>,
+    chalk_items: Vec<ChalkDiagnostic>,
     unnecessary_hints: Vec<Hint>,
     encoding: PositionEncoding,
     file_or_notebook: File,
@@ -44,10 +49,11 @@ impl Diagnostics {
     pub(super) fn result_id_from_hash(
         db: &dyn Db,
         diagnostics: &[ruff_db::diagnostic::Diagnostic],
+        chalk_diagnostics: &[ChalkDiagnostic],
         unnecessary_hints: &[Hint],
         client_capabilities: ResolvedClientCapabilities,
     ) -> Option<String> {
-        if diagnostics.is_empty() && unnecessary_hints.is_empty() {
+        if diagnostics.is_empty() && chalk_diagnostics.is_empty() && unnecessary_hints.is_empty() {
             return None;
         }
 
@@ -55,7 +61,38 @@ impl Diagnostics {
         let mut hasher = DefaultHasher::new();
 
         diagnostics.hash(&mut hasher);
+        chalk_diagnostics.hash(&mut hasher);
         unnecessary_hints.hash(&mut hasher);
+
+        let mut hashed_files = FxHashSet::default();
+
+        // Chalk diagnostics retain byte ranges, but LSP diagnostics use line and column positions.
+        // Hash the primary source conservatively so edits that only change its line index cannot
+        // leave a stale result ID.
+        for diagnostic in chalk_diagnostics {
+            let file = diagnostic.file();
+            if hashed_files.insert(file) {
+                source_text(db, file).as_str().hash(&mut hasher);
+            }
+        }
+
+        if client_capabilities.supports_diagnostic_related_information() {
+            // Unsupported-target locations are also converted from byte ranges to LSP positions.
+            // Their files can be closed and are therefore independent of the requested document.
+            for target in chalk_diagnostics
+                .iter()
+                .filter_map(ChalkDiagnostic::unsupported_function_details)
+                .flat_map(ty_chalk::UnsupportedFunctionDetails::targets)
+            {
+                let Some(location) = target.location() else {
+                    continue;
+                };
+                let file = location.file();
+                if hashed_files.insert(file) {
+                    source_text(db, file).as_str().hash(&mut hasher);
+                }
+            }
+        }
 
         if client_capabilities.supports_full_diagnostic_output() {
             // The rendered output includes source snippets that aren't part of the raw diagnostic.
@@ -64,8 +101,6 @@ impl Diagnostics {
             // TODO: Hash only the source snippets used by the rendered output. Hashing the entire
             // file is deliberately conservative: an edit outside the rendered context can cause a
             // full report, but an edit inside it can never leave stale rendered output on the client.
-            let mut hashed_files = FxHashSet::default();
-
             for diagnostic in diagnostics {
                 let annotations = diagnostic
                     .sub_diagnostics()
@@ -96,6 +131,7 @@ impl Diagnostics {
         Self::result_id_from_hash(
             db,
             &self.items,
+            &self.chalk_items,
             &self.unnecessary_hints,
             client_capabilities,
         )
@@ -177,6 +213,9 @@ impl Diagnostics {
                     )
                 })
                 .collect::<Vec<_>>();
+            diagnostics.extend(self.chalk_items.iter().filter_map(|diagnostic| {
+                chalk_diagnostic_to_lsp(db, diagnostic, self.encoding, client_capabilities)
+            }));
             diagnostics.extend(unnecessary_hints_to_lsp_diagnostics(
                 db,
                 self.file_or_notebook,
@@ -240,9 +279,13 @@ pub(super) fn publish_diagnostics(document: &DocumentHandle, session: &Session, 
         return;
     }
 
-    let db = session.project_db(document.notebook_or_file_path());
+    let state = session.project_state(document.notebook_or_file_path());
+    let db = &state.db;
+    let chalk_project = state.chalk_project();
 
-    let Some(diagnostics) = compute_diagnostics(db, document, session.position_encoding()) else {
+    let Some(diagnostics) =
+        compute_diagnostics(db, document, session.position_encoding(), chalk_project)
+    else {
         return;
     };
 
@@ -284,14 +327,14 @@ pub(super) fn publish_diagnostics(document: &DocumentHandle, session: &Session, 
     }
 }
 
-/// Publishes settings diagnostics for all the project at the given path
-/// using the [publish diagnostics notification].
+/// Publishes settings diagnostics for the project at the exact routing root using the
+/// [publish diagnostics notification].
 ///
 /// [publish diagnostics notification]: https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_publishDiagnostics
 pub(crate) fn publish_settings_diagnostics(
     session: &mut Session,
     client: &Client,
-    path: SystemPathBuf,
+    routing_root: &SystemPath,
 ) {
     // Don't publish settings diagnostics for workspace that are already doing full diagnostics.
     //
@@ -308,10 +351,10 @@ pub(crate) fn publish_settings_diagnostics(
     let session_encoding = session.position_encoding();
     let client_capabilities = session.client_capabilities();
 
-    let project_path = AnySystemPath::System(path);
-
     let (mut diagnostics_by_uri, old_untracked) = {
-        let state = session.project_state_mut(&project_path);
+        let state = session
+            .project_state_for_routing_root_mut(routing_root)
+            .expect("settings diagnostics routing root must exist");
         let db = &state.db;
         let project = db.project();
         let settings_diagnostics = project.check_settings(db);
@@ -353,7 +396,9 @@ pub(crate) fn publish_settings_diagnostics(
         diagnostics_by_uri.entry(uri).or_default();
     }
 
-    let db = session.project_db(&project_path);
+    let db = session
+        .project_db_for_routing_root(routing_root)
+        .expect("settings diagnostics routing root must exist");
     let global_settings = session.global_settings();
 
     // Send the settings diagnostics!
@@ -391,6 +436,7 @@ pub(super) fn compute_diagnostics(
     db: &ProjectDatabase,
     document: &DocumentHandle,
     encoding: PositionEncoding,
+    chalk_project: Option<ChalkProjectInput>,
 ) -> Option<Diagnostics> {
     let Some(file) = document.notebook_or_file(db) else {
         tracing::info!(
@@ -401,13 +447,105 @@ pub(super) fn compute_diagnostics(
     };
 
     let diagnostics = db.check_file(file);
+    let chalk_diagnostics = chalk_project
+        .map(|project| chalk_diagnostics_for_file(db, project, file))
+        .unwrap_or_default();
     let unnecessary_hints = hints(db, file);
 
     Some(Diagnostics {
         items: diagnostics,
+        chalk_items: chalk_diagnostics,
         unnecessary_hints,
         encoding,
         file_or_notebook: file,
+    })
+}
+
+fn chalk_diagnostic_to_lsp(
+    db: &dyn Db,
+    diagnostic: &ChalkDiagnostic,
+    encoding: PositionEncoding,
+    client_capabilities: ResolvedClientCapabilities,
+) -> Option<Diagnostic> {
+    let source_range = diagnostic
+        .range()
+        .to_lsp_range(db, diagnostic.file(), encoding)?;
+    let source_location = source_range.to_location();
+    let mut message = diagnostic.message().into_owned();
+    let mut related_information = None;
+
+    if let Some(details) = diagnostic.unsupported_function_details() {
+        let mut detail_items = Vec::new();
+
+        for target in details.targets() {
+            let detail = match target.reason() {
+                CallNoMatchReason::MissingRegistryEntry => {
+                    format!(
+                        "Target `{}`: no static-accelerator registry entry",
+                        target.label()
+                    )
+                }
+                CallNoMatchReason::SignatureMismatch => {
+                    format!(
+                        "Target `{}`: arguments do not match a registered signature",
+                        target.label()
+                    )
+                }
+            };
+            let location = target
+                .location()
+                .and_then(|range| range.to_lsp_range(db, encoding)?.into_location())
+                .or_else(|| source_location.clone());
+            detail_items.push((location, detail));
+        }
+
+        if let Some(observed_call) = details.observed_call() {
+            detail_items.push((
+                source_location.clone(),
+                format!("Observed call: {observed_call}"),
+            ));
+        }
+        for signature in details.supported_signatures() {
+            let detail = if signature.starts_with("... [") {
+                signature.to_string()
+            } else {
+                format!("Supported: {signature}")
+            };
+            detail_items.push((source_location.clone(), detail));
+        }
+
+        if client_capabilities.supports_diagnostic_related_information() {
+            related_information = Some(
+                detail_items
+                    .into_iter()
+                    .filter_map(|(location, message)| {
+                        Some(DiagnosticRelatedInformation {
+                            location: location?,
+                            message,
+                        })
+                    })
+                    .collect(),
+            );
+        } else {
+            for (_, detail) in detail_items {
+                write!(message, "\n{detail}").ok()?;
+            }
+        }
+    }
+
+    Some(Diagnostic {
+        range: source_range.local_range(),
+        severity: Some(match diagnostic.severity() {
+            ChalkDiagnosticSeverity::Warning => DiagnosticSeverity::Warning,
+            ChalkDiagnosticSeverity::Error => DiagnosticSeverity::Error,
+        }),
+        code: Some(Code::String(diagnostic.code().to_owned())),
+        code_description: None,
+        source: Some("chalk".to_owned()),
+        message: Message::String(message),
+        related_information,
+        tags: None,
+        data: None,
     })
 }
 

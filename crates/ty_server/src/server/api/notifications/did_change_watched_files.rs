@@ -9,7 +9,6 @@ use crate::session::client::Client;
 use crate::system::AnySystemPath;
 use lsp_types::FileChangeType;
 use lsp_types::{self as types, DidChangeWatchedFilesNotification};
-use ty_project::Db as _;
 use ty_project::watch::{ChangeEvent, ChangedKind, CreatedKind, DeletedKind, ExistingPathKind};
 
 pub(crate) struct DidChangeWatchedFiles;
@@ -68,16 +67,11 @@ impl SyncNotificationHandler for DidChangeWatchedFiles {
             return Ok(());
         }
 
-        let roots: Vec<_> = session
-            .project_dbs()
-            .map(|db| db.project().root(db).to_owned())
-            .collect();
+        let roots: Vec<_> = session.project_routing_roots().cloned().collect();
+        session.apply_changes_to_all(&changes);
 
         for root in roots {
-            tracing::debug!("Applying changes to `{root}`");
-
-            session.apply_changes(&AnySystemPath::System(root.clone()), &changes);
-            publish_settings_diagnostics(session, client, root);
+            publish_settings_diagnostics(session, client, &root);
         }
 
         let client_capabilities = session.client_capabilities();

@@ -14,11 +14,12 @@ use lsp_types::{
 use ruff_db::diagnostic::Diagnostic;
 use ruff_db::files::File;
 use ruff_db::source::source_text;
-use rustc_hash::FxHashMap;
+use ruff_db::system::SystemPath;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ty_ide::{Hint, hints};
-use ty_project::{ProgressReporter, ProjectDatabase};
+use ty_project::{Db as _, ProgressReporter, ProjectDatabase};
 
 use crate::PositionEncoding;
 use crate::capabilities::ResolvedClientCapabilities;
@@ -136,8 +137,27 @@ impl BackgroundRequestHandler for WorkspaceDiagnosticRequestHandler {
         );
         let mut reporter = WorkspaceDiagnosticsProgressReporter::new(work_done_progress, writer);
 
-        for db in snapshot.projects() {
-            db.check_with_reporter(&mut reporter);
+        // Chalk routes owned by the same workspace can inherit the workspace's project root. Those
+        // databases have the same settings and index the same project, so their project-level
+        // diagnostics have one owner. Distinct workspaces can discover the same enclosing project
+        // root while applying different workspace settings and must remain independent.
+        let mut reported_projects = FxHashSet::default();
+
+        for project in snapshot.routed_projects() {
+            let db = project.db();
+            if reported_projects.insert((
+                project.workspace_root().map(SystemPath::to_path_buf),
+                db.project().root(db).to_path_buf(),
+            )) {
+                db.report_project_diagnostics(&mut reporter);
+            }
+
+            let indexed_files = db.project().files(db);
+            let files: Vec<_> = (&indexed_files)
+                .into_iter()
+                .filter(|file| snapshot.project_owns_file(project, *file))
+                .collect();
+            db.check_files_with_reporter(files, &mut reporter);
         }
 
         Ok(reporter.into_final_report())
@@ -402,6 +422,7 @@ impl<'a> ResponseWriter<'a> {
         let result_id = Diagnostics::result_id_from_hash(
             db,
             diagnostics,
+            &[],
             unnecessary_hints,
             self.client_capabilities,
         );

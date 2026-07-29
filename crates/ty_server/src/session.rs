@@ -801,7 +801,7 @@ impl Session {
             },
         );
 
-        publish_settings_diagnostics(self, client, root);
+        publish_settings_diagnostics(self, client, &root);
     }
 
     /// Adds an uninitialized workspace to this session.
@@ -1904,10 +1904,6 @@ pub(crate) struct SessionSnapshot {
 }
 
 impl SessionSnapshot {
-    pub(crate) fn projects(&self) -> impl Iterator<Item = &ProjectDatabase> {
-        self.projects.iter().map(RoutedProject::db)
-    }
-
     pub(crate) fn routed_projects(&self) -> &[RoutedProject] {
         &self.projects
     }

@@ -37,7 +37,12 @@ impl BackgroundDocumentRequestHandler for DocumentDiagnosticRequestHandler {
             return Ok(RelatedFullDocumentDiagnosticReport::default().into());
         }
 
-        let diagnostics = compute_diagnostics(db, snapshot.document(), snapshot.encoding());
+        let diagnostics = compute_diagnostics(
+            db,
+            snapshot.document(),
+            snapshot.encoding(),
+            snapshot.chalk_project(),
+        );
 
         let Some(diagnostics) = diagnostics else {
             return Ok(RelatedFullDocumentDiagnosticReport::default().into());
