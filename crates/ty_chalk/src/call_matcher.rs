@@ -2,8 +2,9 @@ use ruff_db::files::FileRange;
 use ruff_python_ast::name::Name;
 use ty_python_semantic::Db;
 use ty_python_semantic::chalk::{
-    CallDefinitionOriginKind, CallModuleProvenance, CallTarget, ChalkClassRelation, Definition,
-    KnownCallTarget, ModuleOrigin, chalk_call_definition_origin, chalk_receiver_module_relation,
+    CallDefinitionOriginKind, CallModuleProvenance, CallTarget, ChalkClassRelation, ChalkTypeShape,
+    Definition, KnownCallTarget, ModuleOrigin, chalk_call_definition_origin,
+    chalk_receiver_module_relation, chalk_type_shape,
 };
 use ty_python_semantic::types::Type;
 
@@ -11,6 +12,8 @@ use crate::supported_functions::{
     CallKind, SupportedFuncs, SupportedSignature, SupportedTy, current_supported_functions,
 };
 use crate::type_matcher::{TypeMatch, match_supported_type};
+
+const MAX_CALL_ALTERNATIVES: usize = 256;
 
 /// One source-ordered argument to a transient call match.
 #[derive(Clone, Copy, Debug)]
@@ -91,18 +94,18 @@ pub(crate) fn match_call_target<'db>(
 }
 
 #[derive(Clone, Copy)]
-enum ActualType<'db> {
+enum ActualType<'a, 'db> {
     Native(Type<'db>),
-    SyntheticModule {
-        name: &'db str,
-        origin: ModuleOrigin,
-    },
+    SyntheticModule { name: &'a str, origin: ModuleOrigin },
 }
 
 #[derive(Clone, Copy)]
 enum ActualArgument<'a, 'db> {
-    Positional(ActualType<'db>),
-    Keyword { name: &'a str, ty: ActualType<'db> },
+    Positional(ActualType<'a, 'db>),
+    Keyword {
+        name: &'a str,
+        ty: ActualType<'a, 'db>,
+    },
 }
 
 impl<'a, 'db> From<ObservedArgument<'a, 'db>> for ActualArgument<'a, 'db> {
@@ -159,7 +162,7 @@ impl<'db> Matcher<'db> {
             ObservedCallTarget::Deferred => ClassifiedCall::Deferred,
             ObservedCallTarget::Known(known) => Self::classify_known(known, call),
             ObservedCallTarget::ModuleProvenance(provenance) => {
-                Self::classify_module_provenance(provenance)
+                Self::classify_module_provenance(provenance, call)
             }
             ObservedCallTarget::Resolved(target) => self.classify_resolved(target, call),
         };
@@ -244,15 +247,16 @@ impl<'db> Matcher<'db> {
     }
 
     fn classify_module_provenance<'a>(
-        provenance: &CallModuleProvenance,
+        provenance: &'a CallModuleProvenance,
+        call: ObservedCall<'a, 'db>,
     ) -> ClassifiedCall<'a, 'db> {
-        if !is_chalk_namespace(provenance.module.as_ref()) {
+        if !matches!(
+            provenance.ownership_origin,
+            ModuleOrigin::StandardLibrary | ModuleOrigin::ThirdParty
+        ) {
             return ClassifiedCall::Deferred;
         }
-        if provenance.ownership_origin != ModuleOrigin::ThirdParty {
-            return ClassifiedCall::Deferred;
-        }
-        ClassifiedCall::Blanket(CallMatchTarget {
+        let mut target = CallMatchTarget {
             identity: CallMatchIdentity::ModuleSymbol {
                 module: provenance.module.as_ref().into(),
                 symbol: Name::new(provenance.symbol.as_str()),
@@ -267,7 +271,48 @@ impl<'db> Matcher<'db> {
             .into(),
             definition_range: None,
             receiver_parameter: provenance.receiver_parameter,
-        })
+        };
+        if provenance.ownership_origin == ModuleOrigin::ThirdParty
+            && is_chalk_namespace(provenance.module.as_ref())
+        {
+            return ClassifiedCall::Blanket(target);
+        }
+
+        if provenance.module.as_ref() == "builtins" {
+            target.kind = CallKind::Builtin;
+            return ClassifiedCall::Registry {
+                protocol: protocol_operation(provenance.symbol.as_str()),
+                target,
+                arguments: call
+                    .arguments
+                    .iter()
+                    .copied()
+                    .map(ActualArgument::from)
+                    .collect(),
+            };
+        }
+
+        target.receiver_parameter = Some(0);
+        let receiver = match provenance.receiver_parameter {
+            Some(_) => {
+                let Some(receiver) = call.receiver else {
+                    return ClassifiedCall::Deferred;
+                };
+                ActualType::Native(receiver)
+            }
+            None => ActualType::SyntheticModule {
+                name: provenance.module.as_ref(),
+                origin: provenance.ownership_origin,
+            },
+        };
+        let mut arguments = Vec::with_capacity(call.arguments.len() + 1);
+        arguments.push(ActualArgument::Positional(receiver));
+        arguments.extend(call.arguments.iter().copied().map(ActualArgument::from));
+        ClassifiedCall::Registry {
+            target,
+            arguments,
+            protocol: None,
+        }
     }
 
     fn classify_resolved<'a>(
@@ -388,10 +433,10 @@ impl<'db> Matcher<'db> {
         }
     }
 
-    fn match_protocol(
+    fn match_protocol<'a>(
         &self,
         protocol: ProtocolOperation,
-        arguments: &[ActualArgument<'_, 'db>],
+        arguments: &[ActualArgument<'a, 'db>],
     ) -> TypeMatch {
         let Some(builtin_signatures) = self
             .supported
@@ -425,30 +470,94 @@ impl<'db> Matcher<'db> {
         }))
     }
 
-    fn match_signatures(
+    fn match_signatures<'a>(
         &self,
         signatures: &[SupportedSignature],
-        arguments: &[ActualArgument<'_, 'db>],
+        arguments: &[ActualArgument<'a, 'db>],
     ) -> TypeMatch {
-        TypeMatch::any_results(signatures.iter().map(|signature| {
-            let Some(bound) = bind_signature(signature, arguments) else {
-                return TypeMatch::NoMatch;
-            };
-            self.match_bound(signature, &bound)
+        let Some(alternatives) = self.argument_alternatives(arguments) else {
+            return TypeMatch::Inconclusive;
+        };
+        TypeMatch::all_results(alternatives.iter().map(|arguments| {
+            TypeMatch::any_results(signatures.iter().map(|signature| {
+                let Some(bound) = bind_signature(signature, arguments) else {
+                    return TypeMatch::NoMatch;
+                };
+                self.match_bound(signature, &bound)
+            }))
         }))
     }
 
-    fn match_bound(
+    fn argument_alternatives<'a>(
+        &self,
+        arguments: &[ActualArgument<'a, 'db>],
+    ) -> Option<Vec<Vec<ActualArgument<'a, 'db>>>> {
+        let mut combinations = vec![Vec::with_capacity(arguments.len())];
+        for argument in arguments {
+            let (types, name) = match *argument {
+                ActualArgument::Positional(ty) => (self.actual_type_alternatives(ty)?, None),
+                ActualArgument::Keyword { name, ty } => {
+                    (self.actual_type_alternatives(ty)?, Some(name))
+                }
+            };
+            if combinations.len().checked_mul(types.len())? > MAX_CALL_ALTERNATIVES {
+                return None;
+            }
+
+            let mut expanded = Vec::with_capacity(combinations.len() * types.len());
+            for combination in &combinations {
+                for ty in &types {
+                    let mut combination = combination.clone();
+                    combination.push(match name {
+                        Some(name) => ActualArgument::Keyword { name, ty: *ty },
+                        None => ActualArgument::Positional(*ty),
+                    });
+                    expanded.push(combination);
+                }
+            }
+            combinations = expanded;
+        }
+        Some(combinations)
+    }
+
+    fn actual_type_alternatives<'a>(
+        &self,
+        actual: ActualType<'a, 'db>,
+    ) -> Option<Vec<ActualType<'a, 'db>>> {
+        let ActualType::Native(actual) = actual else {
+            return Some(vec![actual]);
+        };
+        let mut pending = vec![(actual, 0)];
+        let mut alternatives = Vec::new();
+        while let Some((actual, depth)) = pending.pop() {
+            if depth >= MAX_CALL_ALTERNATIVES {
+                return None;
+            }
+            match chalk_type_shape(self.db, actual) {
+                ChalkTypeShape::Expanded(expanded) => pending.push((expanded, depth + 1)),
+                ChalkTypeShape::Union(elements) => {
+                    if alternatives.len() + pending.len() + elements.len() > MAX_CALL_ALTERNATIVES {
+                        return None;
+                    }
+                    pending.extend(elements.iter().map(|element| (*element, depth + 1)));
+                }
+                _ => alternatives.push(ActualType::Native(actual)),
+            }
+        }
+        Some(alternatives)
+    }
+
+    fn match_bound<'a>(
         &self,
         signature: &SupportedSignature,
-        bound: &[Option<ActualType<'db>>],
+        bound: &[Option<ActualType<'a, 'db>>],
     ) -> TypeMatch {
         TypeMatch::all_results(signature.args().iter().zip(bound).filter_map(
             |(expected, actual)| actual.map(|actual| self.match_actual(actual, expected.ty())),
         ))
     }
 
-    fn match_actual(&self, actual: ActualType<'db>, expected: &SupportedTy) -> TypeMatch {
+    fn match_actual(&self, actual: ActualType<'_, 'db>, expected: &SupportedTy) -> TypeMatch {
         if let SupportedTy::Module { name, .. } = expected {
             return match actual {
                 ActualType::SyntheticModule {
@@ -488,10 +597,10 @@ impl<'db> Matcher<'db> {
     }
 }
 
-fn bind_signature<'db>(
+fn bind_signature<'a, 'db>(
     signature: &SupportedSignature,
-    arguments: &[ActualArgument<'_, 'db>],
-) -> Option<Vec<Option<ActualType<'db>>>> {
+    arguments: &[ActualArgument<'a, 'db>],
+) -> Option<Vec<Option<ActualType<'a, 'db>>>> {
     let parameters = signature.args();
     let mut bound = vec![None; parameters.len()];
     let mut next_positional = 0;

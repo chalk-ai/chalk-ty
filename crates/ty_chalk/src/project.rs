@@ -420,15 +420,18 @@ mod tests {
             .unwrap();
 
         let yml = discover_chalk_project(&system, SystemPath::new("/workspace/file.py")).unwrap();
-        assert_eq!(yml.root, SystemPath::new("/workspace"));
-        assert_eq!(yml.config_path, SystemPath::new("/workspace/chalk.yml"));
+        assert_eq!(yml.root.as_path(), SystemPath::new("/workspace"));
+        assert_eq!(
+            yml.config_path.as_path(),
+            SystemPath::new("/workspace/chalk.yml")
+        );
 
         let yaml =
             discover_chalk_project(&system, SystemPath::new("/workspace/nested/src/file.py"))
                 .unwrap();
-        assert_eq!(yaml.root, SystemPath::new("/workspace/nested"));
+        assert_eq!(yaml.root.as_path(), SystemPath::new("/workspace/nested"));
         assert_eq!(
-            yaml.config_path,
+            yaml.config_path.as_path(),
             SystemPath::new("/workspace/nested/chalk.yaml")
         );
 

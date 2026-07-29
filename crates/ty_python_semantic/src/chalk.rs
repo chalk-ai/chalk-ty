@@ -695,7 +695,12 @@ fn call_module_provenance(
     expression: &ast::Expr,
 ) -> Vec<CallModuleProvenance> {
     let targets = call_targets(model, expression);
-    if !targets.targets.is_empty() || !targets.known_targets.is_empty() {
+    if !targets.known_targets.is_empty()
+        || targets
+            .targets
+            .iter()
+            .any(|target| target.kind == CallTargetKind::ClassConstructor)
+    {
         return Vec::new();
     }
 
@@ -703,18 +708,21 @@ fn call_module_provenance(
     match expression {
         ast::Expr::Name(name) => {
             let mut imported = Vec::new();
-            let _ = directly_imported_symbols(model, name, &mut imported);
-            provenance.extend(imported.into_iter().filter_map(|origin| {
-                (origin.ownership_origin == ModuleOrigin::ThirdParty
-                    && is_chalk_namespace(origin.module.as_str()))
-                .then(|| CallModuleProvenance {
-                    module: origin.module.as_str().into(),
-                    symbol: origin.symbol,
-                    origin: origin.origin,
-                    ownership_origin: origin.ownership_origin,
-                    receiver_parameter: None,
-                })
-            }));
+            if directly_imported_symbols(model, name, &mut imported) {
+                provenance.extend(imported.into_iter().filter_map(|origin| {
+                    matches!(
+                        origin.ownership_origin,
+                        ModuleOrigin::StandardLibrary | ModuleOrigin::ThirdParty
+                    )
+                    .then(|| CallModuleProvenance {
+                        module: origin.module.as_str().into(),
+                        symbol: origin.symbol,
+                        origin: origin.origin,
+                        ownership_origin: origin.ownership_origin,
+                        receiver_parameter: None,
+                    })
+                }));
+            }
         }
         ast::Expr::Attribute(attribute) => {
             if let Some(receiver) = attribute.value.inferred_type(model) {
@@ -728,6 +736,14 @@ fn call_module_provenance(
         }
         _ => {}
     }
+    provenance.retain(|candidate| {
+        !targets.targets.iter().any(|target| {
+            chalk_call_definition_origin(model.db(), target.definition).is_some_and(|origin| {
+                origin.module.as_ref() == candidate.module.as_ref()
+                    && origin.symbol == candidate.symbol
+            })
+        })
+    });
     provenance
 }
 
@@ -758,8 +774,15 @@ fn receiver_call_module_provenance(
         module.name(model.db()),
         Some(module),
     );
-    if ownership_origin != ModuleOrigin::ThirdParty
-        || !is_chalk_namespace(module.name(model.db()).as_str())
+    if !matches!(
+        ownership_origin,
+        ModuleOrigin::StandardLibrary | ModuleOrigin::ThirdParty
+    ) {
+        return;
+    }
+    if receiver_parameter.is_some()
+        && (ownership_origin != ModuleOrigin::ThirdParty
+            || !is_chalk_namespace(module.name(model.db()).as_str()))
     {
         return;
     }

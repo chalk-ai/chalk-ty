@@ -232,14 +232,17 @@ impl<'a, 'db> FactVisitor<'a, 'db> {
                 no_matches.push(no_match);
             }
         };
-        for target in &targets.targets {
-            record_match(ObservedCallTarget::Resolved(*target));
-        }
-        for target in &targets.known_targets {
-            record_match(ObservedCallTarget::Known(*target));
-        }
-        for provenance in &module_provenance {
-            record_match(ObservedCallTarget::ModuleProvenance(provenance));
+        if module_provenance.is_empty() {
+            for target in &targets.targets {
+                record_match(ObservedCallTarget::Resolved(*target));
+            }
+            for target in &targets.known_targets {
+                record_match(ObservedCallTarget::Known(*target));
+            }
+        } else {
+            for provenance in &module_provenance {
+                record_match(ObservedCallTarget::ModuleProvenance(provenance));
+            }
         }
         if targets.has_unresolved
             || (targets.targets.is_empty()
