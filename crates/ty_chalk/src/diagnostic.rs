@@ -249,6 +249,7 @@ fn invalid_suppression_reason(reason: InvalidSuppressionReason) -> &'static str 
         InvalidSuppressionReason::TrailingContent => {
             "unexpected content after suppression code list"
         }
+        InvalidSuppressionReason::UnsuppressibleCode => "this diagnostic code cannot be suppressed",
     }
 }
 

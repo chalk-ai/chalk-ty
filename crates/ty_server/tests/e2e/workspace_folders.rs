@@ -192,7 +192,7 @@ fn workspace_diagnostics_partition_nested_chalk_projects() -> Result<()> {
 }
 
 #[test]
-fn workspace_diagnostics_report_cycles_in_closed_files() -> Result<()> {
+fn workspace_diagnostics_report_unsuppressible_cycles_in_closed_files() -> Result<()> {
     let workspace = SystemPath::new("workspace");
     let main = workspace.join("project/main.py");
     let helper = workspace.join("project/helper.py");
@@ -207,7 +207,7 @@ def root():
     let helper_source = "\
 from project import main
 
-# chalk: ignore[unsupported-function]
+# chalk: ignore[unsupported-function, resolver-cycle, future-code]
 def first():
     main.root()
 ";
@@ -247,8 +247,60 @@ def first():
         .filter(|diagnostic| diagnostic.source.as_deref() == Some("chalk"))
         .collect::<Vec<_>>();
 
-    assert_eq!(chalk_diagnostics.len(), 1);
-    let cycle = chalk_diagnostics[0];
+    assert_eq!(chalk_diagnostics.len(), 3);
+    let invalid_suppression = chalk_diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.code.as_ref()
+                == Some(&lsp_types::Code::String(
+                    "invalid-chalk-suppression".to_owned(),
+                ))
+        })
+        .expect("resolver-cycle must be rejected as an unsuppressible diagnostic code");
+    assert_eq!(
+        invalid_suppression.range,
+        lsp_types::Range::new(Position::new(2, 38), Position::new(2, 52))
+    );
+    assert_eq!(
+        invalid_suppression.severity,
+        Some(DiagnosticSeverity::Warning)
+    );
+    assert_eq!(
+        invalid_suppression.message,
+        Message::String(
+            "Invalid Chalk suppression directive: this diagnostic code cannot be suppressed"
+                .to_owned()
+        )
+    );
+
+    let unknown_suppression = chalk_diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.code.as_ref()
+                == Some(&lsp_types::Code::String(
+                    "unknown-chalk-suppression".to_owned(),
+                ))
+        })
+        .expect("future-code must remain an unknown suppression code");
+    assert_eq!(
+        unknown_suppression.range,
+        lsp_types::Range::new(Position::new(2, 54), Position::new(2, 65))
+    );
+    assert_eq!(
+        unknown_suppression.severity,
+        Some(DiagnosticSeverity::Warning)
+    );
+    assert_eq!(
+        unknown_suppression.message,
+        Message::String("Unknown Chalk suppression code: future-code".to_owned())
+    );
+
+    let cycle = chalk_diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.code.as_ref() == Some(&lsp_types::Code::String("resolver-cycle".to_owned()))
+        })
+        .expect("the invalid suppression must not suppress the cycle");
     assert_eq!(
         cycle.range,
         lsp_types::Range::new(Position::new(4, 4), Position::new(4, 15))

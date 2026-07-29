@@ -37,6 +37,7 @@ pub enum InvalidSuppressionReason {
     EmptyCodeList,
     MalformedCodeList,
     TrailingContent,
+    UnsuppressibleCode,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, salsa::Update, get_size2::GetSize)]
@@ -310,13 +311,16 @@ fn parse_comment(
 
     let mut suppresses_unsupported_function = false;
     for (token_start, token_end) in tokens {
-        if &text[token_start..token_end] == "unsupported-function" {
-            suppresses_unsupported_function = true;
-        } else {
-            problems.push(SuppressionProblem {
+        match &text[token_start..token_end] {
+            "unsupported-function" => suppresses_unsupported_function = true,
+            "resolver-cycle" => problems.push(SuppressionProblem {
+                range: absolute_range(start, token_start, token_end),
+                kind: SuppressionProblemKind::Invalid(InvalidSuppressionReason::UnsuppressibleCode),
+            }),
+            _ => problems.push(SuppressionProblem {
                 range: absolute_range(start, token_start, token_end),
                 kind: SuppressionProblemKind::UnknownCode,
-            });
+            }),
         }
     }
 
@@ -411,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_known_unknown_mixed_and_isolates_other_ignore_syntaxes() {
+    fn parses_known_invalid_and_unknown_codes() {
         let source = "\
 x = 1  # chalk: ignore[unsupported-function]
 y = 2  # chalk: ignore[resolver-cycle]
@@ -443,7 +447,17 @@ b = 5  # type: ignore[unsupported-function]
             .filter(|problem| problem.kind == SuppressionProblemKind::UnknownCode)
             .map(|problem| text(source, problem.range))
             .collect::<Vec<_>>();
-        assert_eq!(unknown, ["resolver-cycle", "resolver-cycle", "future-code"]);
+        assert_eq!(unknown, ["future-code"]);
+        let unsuppressible = suppressions
+            .problems
+            .iter()
+            .filter(|problem| {
+                problem.kind
+                    == SuppressionProblemKind::Invalid(InvalidSuppressionReason::UnsuppressibleCode)
+            })
+            .map(|problem| text(source, problem.range))
+            .collect::<Vec<_>>();
+        assert_eq!(unsuppressible, ["resolver-cycle", "resolver-cycle"]);
     }
 
     #[test]
