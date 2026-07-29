@@ -26,7 +26,7 @@ use ty_combine::Combine;
 use ty_project::metadata::Options;
 use ty_project::metadata::options::ProjectOptionsOverrides;
 use ty_project::watch::{ChangeEvent, CreatedKind};
-use ty_project::{ChangeResult, Db as _, ProjectDatabase, ProjectMetadata};
+use ty_project::{Db as _, ProjectDatabase, ProjectMetadata};
 
 use index::DocumentError;
 use ty_python_core::program::UseDefaultStrategy;
@@ -451,35 +451,17 @@ impl Session {
         self.projects.values_mut().next().unwrap()
     }
 
-    pub(crate) fn apply_changes(
-        &mut self,
-        path: &AnySystemPath,
-        changes: &[ChangeEvent],
-    ) -> ChangeResult {
-        let target_routing_root = match path {
-            AnySystemPath::System(path) => self
-                .project_entry_for_path(path)
-                .or_else(|| self.projects.first_key_value()),
-            AnySystemPath::SystemVirtual(_) => self.projects.first_key_value(),
-        }
-        .map(|(routing_root, _)| routing_root.clone())
-        .expect("To always have at least one project");
+    pub(crate) fn apply_changes(&mut self, changes: &[ChangeEvent]) {
         let projects = self.projects_with_overrides();
 
         self.bump_revision();
 
-        let mut routed_result = None;
         for (routing_root, overrides) in projects {
             let Some(state) = self.projects.get_mut(&routing_root) else {
                 continue;
             };
-            let result = Self::apply_changes_to_project(state, changes, overrides.as_ref());
-            if routing_root == target_routing_root {
-                routed_result = Some(result);
-            }
+            Self::apply_changes_to_project(state, changes, overrides.as_ref());
         }
-
-        routed_result.expect("The routed project must still exist")
     }
 
     fn projects_with_overrides(&self) -> Vec<(SystemPathBuf, Option<ProjectOptionsOverrides>)> {
@@ -501,8 +483,8 @@ impl Session {
         state: &mut ProjectState,
         changes: &[ChangeEvent],
         overrides: Option<&ProjectOptionsOverrides>,
-    ) -> ChangeResult {
-        let result = state.db.apply_changes(changes, overrides);
+    ) {
+        state.db.apply_changes(changes, overrides);
 
         if state.chalk_project.as_ref().is_some_and(|chalk_project| {
             changes
@@ -516,8 +498,6 @@ impl Session {
                 chalk_project.project().root()
             );
         }
-
-        result
     }
 
     /// Applies filesystem changes to every persistent project database.
@@ -1653,7 +1633,7 @@ impl Session {
                 } else {
                     ChangeEvent::Opened(system_path.clone())
                 };
-                self.apply_changes(path, &[event]);
+                self.apply_changes(&[event]);
 
                 if is_not_python {
                     return;
@@ -2351,7 +2331,7 @@ impl DocumentHandle {
             }
         };
 
-        session.apply_changes(path, &changes);
+        session.apply_changes(&changes);
     }
 
     fn set_version(&mut self, version: DocumentVersion) {
@@ -2440,10 +2420,8 @@ impl DocumentHandle {
         if !is_cell {
             match path {
                 AnySystemPath::System(system_path) => {
-                    session.apply_changes(
-                        path,
-                        &[ChangeEvent::file_content_changed(system_path.clone())],
-                    );
+                    session
+                        .apply_changes(&[ChangeEvent::file_content_changed(system_path.clone())]);
 
                     let state = session.project_state_mut(path);
                     if let Some(file) = state.db.files().try_system(&state.db, system_path)

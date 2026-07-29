@@ -352,9 +352,9 @@ pub(crate) fn publish_settings_diagnostics(
     let client_capabilities = session.client_capabilities();
 
     let (mut diagnostics_by_uri, old_untracked) = {
-        let state = session
-            .project_state_for_routing_root_mut(routing_root)
-            .expect("settings diagnostics routing root must exist");
+        let Some(state) = session.project_state_for_routing_root_mut(routing_root) else {
+            return;
+        };
         let db = &state.db;
         let project = db.project();
         let settings_diagnostics = project.check_settings(db);
@@ -396,9 +396,9 @@ pub(crate) fn publish_settings_diagnostics(
         diagnostics_by_uri.entry(uri).or_default();
     }
 
-    let db = session
-        .project_db_for_routing_root(routing_root)
-        .expect("settings diagnostics routing root must exist");
+    let Some(db) = session.project_db_for_routing_root(routing_root) else {
+        return;
+    };
     let global_settings = session.global_settings();
 
     // Send the settings diagnostics!
