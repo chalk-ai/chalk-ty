@@ -1355,7 +1355,7 @@ def narrowed[T](value: T):
     }
 
     #[test]
-    fn expansion_overflow_is_inconclusive_but_does_not_hide_a_mismatch() {
+    fn expansion_overflow_preserves_mismatch() {
         let (db, file) = setup(
             "\
 from typing import cast

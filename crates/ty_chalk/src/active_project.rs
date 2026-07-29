@@ -4,6 +4,7 @@ use salsa::Setter;
 use ty_project::Db;
 use ty_project::watch::ChangeEvent;
 
+use crate::project::configured_chalkignore;
 use crate::{ChalkProject, ChalkProjectError};
 
 /// The active Chalk project visible to Salsa queries in a project database.
@@ -162,7 +163,7 @@ fn source_files(
     project: &ChalkProject,
     open_sources: &[File],
 ) -> Result<(Box<[File]>, SystemPathBuf), ChalkProjectError> {
-    let ignore_path = project.configured_ignore_path(db.system())?;
+    let ignore_path = configured_chalkignore(db.system(), project)?;
     let mut source_files = project
         .source_files(db.system())?
         .into_iter()

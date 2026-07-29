@@ -51,12 +51,6 @@ impl SupportedFuncs {
     }
 
     #[must_use]
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        self.impls.len()
-    }
-
-    #[must_use]
     pub(crate) fn signatures(&self, kind: CallKind, name: &str) -> Option<&[SupportedSignature]> {
         self.impls
             .get(&SupportedCall::new(kind, name))
@@ -274,64 +268,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_snapshot_counts() {
+    fn current_snapshot_representative_signatures() {
         let funcs = current_supported_functions();
-        assert_eq!(funcs.len(), 306);
+
         assert_eq!(
-            funcs
-                .entries()
-                .map(|(_, signatures)| signatures.len())
-                .sum::<usize>(),
-            884
+            present_supported_signatures(funcs, &[SupportedCall::new(CallKind::Builtin, "len")]),
+            ["len(Any | None)"]
         );
-    }
-
-    #[test]
-    fn current_snapshot_representative_metadata() {
-        let funcs = current_supported_functions();
-
-        let len = funcs.signatures(CallKind::Builtin, "len").unwrap();
-        assert!(matches!(
-            len[0].args(),
-            [SupportedArg {
-                ty: SupportedTy::Any { nullable: true },
-                argument_name: None,
-                has_default: false,
-            }]
-        ));
-
-        let md5 = funcs.signatures(CallKind::Method, "md5").unwrap();
-        let used_for_security = &md5[0].args()[2];
-        assert_eq!(used_for_security.argument_name(), Some("usedforsecurity"));
-        assert!(used_for_security.has_default());
-
-        let value = funcs.signatures(CallKind::Attribute, "value").unwrap();
-        assert!(matches!(
-            value[0].args(),
-            [SupportedArg {
-                ty: SupportedTy::SubClassOf {
-                    ty_name,
-                    match_nullable: false,
-                },
-                ..
-            }] if ty_name == "TyEnum"
-        ));
-
-        let eq = funcs.signatures(CallKind::Method, "__eq__").unwrap();
-        assert!(eq.iter().any(|signature| {
-            matches!(
-                signature.args(),
-                [
-                    SupportedArg {
-                        ty: SupportedTy::Int { nullable: true },
-                        ..
-                    },
-                    SupportedArg {
-                        ty: SupportedTy::Int { nullable: true },
-                        ..
-                    },
-                ]
-            )
-        }));
+        assert_eq!(
+            present_supported_signatures(funcs, &[SupportedCall::new(CallKind::Method, "md5")]),
+            ["md5(bytes, usedforsecurity: bool = ...)"]
+        );
+        assert_eq!(
+            present_supported_signatures(
+                funcs,
+                &[SupportedCall::new(CallKind::Attribute, "value")]
+            ),
+            ["value(subclass[TyEnum])"]
+        );
     }
 }

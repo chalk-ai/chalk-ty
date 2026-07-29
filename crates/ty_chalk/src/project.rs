@@ -41,13 +41,6 @@ impl ChalkProject {
         &self.config_path
     }
 
-    pub(crate) fn configured_ignore_path(
-        &self,
-        system: &dyn System,
-    ) -> Result<SystemPathBuf, ChalkProjectError> {
-        configured_chalkignore(system, self)
-    }
-
     /// Recomputes and returns the project's apply/import source membership.
     ///
     /// The result is sorted by path and contains Python and Chalk SQL sources.
@@ -222,7 +215,7 @@ struct EnvironmentConfig {
     chalkignore: Option<String>,
 }
 
-fn configured_chalkignore(
+pub(crate) fn configured_chalkignore(
     system: &dyn System,
     project: &ChalkProject,
 ) -> Result<SystemPathBuf, ChalkProjectError> {

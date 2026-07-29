@@ -800,7 +800,7 @@ def generator_unsupported(): pass
     }
 
     #[test]
-    fn root_suppression_only_removes_seed_and_lexical_suppressions_only_remove_local_calls() {
+    fn root_and_lexical_suppressions() {
         let (db, files) = setup(&[
             (
                 "/main.py",

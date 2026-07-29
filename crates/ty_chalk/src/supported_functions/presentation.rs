@@ -922,7 +922,7 @@ mod tests {
     }
 
     #[test]
-    fn existing_nullable_diagonal_does_not_imply_the_missing_cross_product() {
+    fn nullable_diagonal_stays_separate() {
         let function = call(CallKind::Builtin, "f");
         let supported = supported([(
             function.clone(),

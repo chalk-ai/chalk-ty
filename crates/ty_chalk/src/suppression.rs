@@ -79,13 +79,6 @@ impl<'db> Suppressions<'db> {
     }
 
     #[cfg(test)]
-    fn suppresses_function_range(&self, function: TextRange, code: SuppressionCode) -> bool {
-        self.function
-            .iter()
-            .any(|suppression| suppression.function == function && suppression.code == code)
-    }
-
-    #[cfg(test)]
     fn suppresses_statement(&self, statement: TextRange, code: SuppressionCode) -> bool {
         self.statement
             .iter()
@@ -529,10 +522,6 @@ def separated():
             decorated.definition(&model),
             SuppressionCode::UnsupportedFunction
         ));
-        assert!(
-            suppressions
-                .suppresses_function_range(decorated.range, SuppressionCode::UnsupportedFunction)
-        );
         assert!(!suppressions.suppresses_function(
             nested.definition(&model),
             SuppressionCode::UnsupportedFunction
@@ -542,6 +531,7 @@ def separated():
             SuppressionCode::UnsupportedFunction
         ));
         assert_eq!(suppressions.function().len(), 1);
+        assert_eq!(suppressions.function()[0].function, decorated.range);
     }
 
     #[test]
