@@ -192,3 +192,216 @@ fn is_source(path: &SystemPath) -> bool {
             .file_name()
             .is_some_and(|name| name.ends_with(".chalk.sql"))
 }
+
+#[cfg(test)]
+mod tests {
+    use ruff_db::Db as _;
+    use ruff_db::system::{
+        DbWithTestSystem as _, DbWithWritableSystem as _, SystemPath, SystemPathBuf,
+    };
+    use ty_project::watch::{ChangedKind, CreatedKind, DeletedKind};
+    use ty_project::{ProjectMetadata, TestDb};
+
+    use super::{ActiveChalkProject, ChangeEvent};
+    use crate::discover_chalk_project;
+
+    fn test_db() -> TestDb {
+        TestDb::new(ProjectMetadata::new(
+            "workspace",
+            SystemPathBuf::from("/workspace"),
+        ))
+    }
+
+    fn active_project(db: &TestDb, root: &SystemPath) -> ActiveChalkProject {
+        let project = discover_chalk_project(db.system(), &root.join("src/main.py")).unwrap();
+        ActiveChalkProject::new(db, project).unwrap()
+    }
+
+    fn paths(db: &TestDb, project: &ActiveChalkProject) -> Vec<String> {
+        project
+            .input()
+            .source_files(db)
+            .iter()
+            .map(|file| file.path(db).as_str().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn deterministic_typed_source_set() {
+        let mut db = test_db();
+        db.write_file("/workspace/chalk.yml", "").unwrap();
+        db.write_file("/workspace/z.py", "").unwrap();
+        db.write_file("/workspace/a.chalk.sql", "").unwrap();
+        db.write_file("/workspace/not-sql.sql", "").unwrap();
+
+        let project = active_project(&db, SystemPath::new("/workspace"));
+        let input = project.input();
+
+        assert_eq!(input.root(&db), SystemPath::new("/workspace"));
+        assert_eq!(
+            input.config_path(&db),
+            SystemPath::new("/workspace/chalk.yml")
+        );
+        assert_eq!(
+            paths(&db, &project),
+            ["/workspace/a.chalk.sql", "/workspace/z.py"]
+        );
+        assert_eq!(
+            input
+                .python_files(&db)
+                .map(|file| file.path(&db).as_str())
+                .collect::<Vec<_>>(),
+            ["/workspace/z.py"]
+        );
+        assert_eq!(
+            input
+                .chalk_sql_files(&db)
+                .map(|file| file.path(&db).as_str())
+                .collect::<Vec<_>>(),
+            ["/workspace/a.chalk.sql"]
+        );
+    }
+
+    #[test]
+    fn refreshes_add_delete_and_skips_source_content_changes() {
+        let mut db = test_db();
+        db.write_file("/workspace/chalk.yml", "").unwrap();
+        db.write_file("/workspace/old.py", "").unwrap();
+        let mut project = active_project(&db, SystemPath::new("/workspace"));
+
+        let content_change =
+            ChangeEvent::file_content_changed(SystemPathBuf::from("/workspace/old.py"));
+        assert!(!project.should_refresh(&content_change));
+        assert!(!project.refresh(&mut db).unwrap());
+
+        db.write_file("/workspace/new.py", "").unwrap();
+        let created = ChangeEvent::Created {
+            path: SystemPathBuf::from("/workspace/new.py"),
+            kind: CreatedKind::File,
+        };
+        assert!(project.should_refresh(&created));
+        assert!(project.refresh(&mut db).unwrap());
+        assert_eq!(
+            paths(&db, &project),
+            ["/workspace/new.py", "/workspace/old.py"]
+        );
+
+        db.memory_file_system()
+            .remove_file(SystemPath::new("/workspace/old.py"))
+            .unwrap();
+        let deleted = ChangeEvent::Deleted {
+            path: SystemPathBuf::from("/workspace/old.py"),
+            kind: DeletedKind::File,
+        };
+        assert!(project.should_refresh(&deleted));
+        assert!(project.refresh(&mut db).unwrap());
+        assert_eq!(paths(&db, &project), ["/workspace/new.py"]);
+    }
+
+    #[test]
+    fn refreshes_configured_and_nested_ignore_changes() {
+        let mut db = test_db();
+        db.write_file(
+            "/workspace/chalk.yml",
+            "chalkignore: /global/chalk.ignore\n",
+        )
+        .unwrap();
+        db.write_file("/global/chalk.ignore", "ignored.py\n")
+            .unwrap();
+        db.write_file("/workspace/ignored.py", "").unwrap();
+        db.write_file("/workspace/pkg/.gitignore", "nested.py\n")
+            .unwrap();
+        db.write_file("/workspace/pkg/nested.py", "").unwrap();
+        let mut project = active_project(&db, SystemPath::new("/workspace"));
+        assert!(paths(&db, &project).is_empty());
+
+        db.write_file("/global/chalk.ignore", "").unwrap();
+        let configured_ignore = ChangeEvent::Changed {
+            path: SystemPathBuf::from("/global/chalk.ignore"),
+            kind: ChangedKind::FileContent,
+        };
+        assert!(project.should_refresh(&configured_ignore));
+        assert!(project.refresh(&mut db).unwrap());
+        assert_eq!(paths(&db, &project), ["/workspace/ignored.py"]);
+
+        db.write_file("/workspace/pkg/.gitignore", "").unwrap();
+        let gitignore = ChangeEvent::Changed {
+            path: SystemPathBuf::from("/workspace/pkg/.gitignore"),
+            kind: ChangedKind::FileContent,
+        };
+        assert!(project.should_refresh(&gitignore));
+        assert!(project.refresh(&mut db).unwrap());
+        assert_eq!(
+            paths(&db, &project),
+            ["/workspace/ignored.py", "/workspace/pkg/nested.py"]
+        );
+    }
+
+    #[test]
+    fn marker_deletion_preserves_last_valid_input() {
+        let mut db = test_db();
+        db.write_file("/workspace/chalk.yml", "").unwrap();
+        db.write_file("/workspace/main.py", "").unwrap();
+        let project = active_project(&db, SystemPath::new("/workspace"));
+        let before = paths(&db, &project);
+
+        db.memory_file_system()
+            .remove_file(SystemPath::new("/workspace/chalk.yml"))
+            .unwrap();
+        let deleted = ChangeEvent::Deleted {
+            path: SystemPathBuf::from("/workspace/chalk.yml"),
+            kind: DeletedKind::File,
+        };
+        assert!(!project.should_refresh(&deleted));
+        assert!(!project.should_refresh(&ChangeEvent::Created {
+            path: SystemPathBuf::from("/workspace/chalk.yml"),
+            kind: CreatedKind::File,
+        }));
+        assert_eq!(paths(&db, &project), before);
+    }
+
+    #[test]
+    fn refresh_error_preserves_last_valid_input() {
+        let mut db = test_db();
+        db.write_file("/workspace/chalk.yml", "").unwrap();
+        db.write_file("/workspace/main.py", "").unwrap();
+        let mut project = active_project(&db, SystemPath::new("/workspace"));
+        let before = paths(&db, &project);
+
+        db.write_file("/workspace/chalk.yml", "chalkignore: [")
+            .unwrap();
+        let changed = ChangeEvent::Changed {
+            path: SystemPathBuf::from("/workspace/chalk.yml"),
+            kind: ChangedKind::FileContent,
+        };
+        assert!(project.should_refresh(&changed));
+        assert!(project.refresh(&mut db).is_err());
+        assert_eq!(paths(&db, &project), before);
+    }
+
+    #[test]
+    fn sibling_projects_are_isolated() {
+        let mut db = test_db();
+        db.write_file("/workspace/a/chalk.yml", "").unwrap();
+        db.write_file("/workspace/a/main.py", "").unwrap();
+        db.write_file("/workspace/b/chalk.yml", "").unwrap();
+        db.write_file("/workspace/b/main.py", "").unwrap();
+        let mut a = active_project(&db, SystemPath::new("/workspace/a"));
+        let b = active_project(&db, SystemPath::new("/workspace/b"));
+        let b_before = paths(&db, &b);
+
+        db.write_file("/workspace/a/new.py", "").unwrap();
+        let created = ChangeEvent::Created {
+            path: SystemPathBuf::from("/workspace/a/new.py"),
+            kind: CreatedKind::File,
+        };
+        assert!(a.should_refresh(&created));
+        assert!(!b.should_refresh(&created));
+        assert!(a.refresh(&mut db).unwrap());
+        assert_eq!(
+            paths(&db, &a),
+            ["/workspace/a/main.py", "/workspace/a/new.py"]
+        );
+        assert_eq!(paths(&db, &b), b_before);
+    }
+}
