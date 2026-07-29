@@ -21,6 +21,7 @@ use ruff_db::Db;
 use ruff_db::files::{File, system_path_to_file};
 use ruff_db::system::{System, SystemPath, SystemPathBuf};
 use ruff_python_ast::PySourceType;
+use ty_chalk::{ActiveChalkProject, ChalkProject, ChalkProjectInput, discover_chalk_project};
 use ty_combine::Combine;
 use ty_project::metadata::Options;
 use ty_project::watch::{ChangeEvent, CreatedKind};
@@ -47,6 +48,8 @@ pub(crate) mod index;
 mod options;
 mod request_queue;
 mod settings;
+
+const FILE_WATCHER_REGISTRATION_ID: &str = "ty/workspace/didChangeWatchedFiles";
 
 /// The global state for the LSP
 pub(crate) struct Session {
@@ -106,12 +109,23 @@ pub(crate) struct Session {
     /// client.
     registrations: HashSet<String>,
 
+    /// Whether adding a persistent project changed the paths covered by file watching.
+    file_watcher_registration_needs_refresh: bool,
+
     /// The name of the client (editor) that connected to this server.
     client_name: ClientName,
 }
 
 /// LSP State for a Project
 pub(crate) struct ProjectState {
+    kind: ProjectKind,
+
+    /// The workspace whose settings were used to create this project.
+    ///
+    /// This is separate from the routing root because a Chalk project can inherit ty
+    /// configuration from above its Chalk root.
+    workspace_root: Option<SystemPathBuf>,
+
     /// Files that we have outstanding otherwise-untracked pushed diagnostics for.
     ///
     /// In `CheckMode::OpenFiles` we still read some files that the client hasn't
@@ -127,6 +141,8 @@ pub(crate) struct ProjectState {
     /// to update any of them.
     pub(crate) untracked_files_with_pushed_diagnostics: Vec<Uri>,
 
+    chalk_project: Option<ActiveChalkProject>,
+
     // Note: This field should be last to ensure the `db` gets dropped last.
     // The db drop order matters because we call `Arc::into_inner` on some Arc's
     // and we use Salsa's cancellation to guarantee that there's only a single reference to the `Arc`.
@@ -134,6 +150,22 @@ pub(crate) struct ProjectState {
     // This shouldn't matter here because the db's stored in the session are the
     // only reference we want to hold on, but better be safe than sorry ;).
     pub(crate) db: ProjectDatabase,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProjectKind {
+    Workspace,
+    Chalk,
+}
+
+impl ProjectState {
+    pub(crate) fn kind(&self) -> ProjectKind {
+        self.kind
+    }
+
+    pub(crate) fn chalk_project(&self) -> Option<ChalkProjectInput> {
+        self.chalk_project.as_ref().map(ActiveChalkProject::input)
+    }
 }
 
 impl Session {
@@ -171,6 +203,7 @@ impl Session {
             suspended_workspace_diagnostics_request: None,
             revision: 0,
             registrations: HashSet::new(),
+            file_watcher_registration_needs_refresh: false,
             client_name,
         })
     }
@@ -303,8 +336,8 @@ impl Session {
 
     /// Returns a reference to the project's [`ProjectDatabase`] in which the given `path` belongs.
     ///
-    /// If the path is a system path, it will return the project database that is closest to the
-    /// given path, or the first project if no project is found for the path.
+    /// If the path is a system path, it will prefer the closest Chalk project containing the path,
+    /// then the closest workspace project, or the first project if neither contains the path.
     ///
     /// If the path is a virtual path, it will return the first project database in the session.
     pub(crate) fn project_db(&self, path: &AnySystemPath) -> &ProjectDatabase {
@@ -331,8 +364,8 @@ impl Session {
 
     /// Returns a reference to the project's [`ProjectState`] in which the given `path` belongs.
     ///
-    /// If the path is a system path, it will return the project database that is closest to the
-    /// given path, or the first project if no project is found for the path.
+    /// If the path is a system path, it will prefer the closest Chalk project containing the path,
+    /// then the closest workspace project, or the first project if neither contains the path.
     ///
     /// If the path is a virtual path, it will return the first project database in the session.
     pub(crate) fn project_state(&self, path: &AnySystemPath) -> &ProjectState {
@@ -353,23 +386,14 @@ impl Session {
     pub(crate) fn project_state_mut(&mut self, path: &AnySystemPath) -> &mut ProjectState {
         match path {
             AnySystemPath::System(system_path) => {
-                let range = ..=system_path.to_path_buf();
-
-                // Using `range` here to work around a borrow checker limitation
-                // where it can't prove that the `range_mut` call and the `self.projects.values_mut`
-                // never borrow `self.projects` mutably at the same time.
-                // https://rust-lang.github.io/rfcs/2094-nll.html#problem-case-3-conditional-control-flow-across-functions
-                if self
-                    .projects
-                    .range(range.clone())
-                    .any(|(workspace_root, _)| system_path.starts_with(workspace_root))
+                if let Some(routing_root) = self
+                    .project_entry_for_path(system_path)
+                    .map(|(routing_root, _)| routing_root.clone())
                 {
                     return self
                         .projects
-                        .range_mut(range)
-                        .rfind(|(workspace_root, _)| system_path.starts_with(workspace_root))
-                        .unwrap()
-                        .1;
+                        .get_mut(&routing_root)
+                        .expect("selected project must still exist");
                 }
 
                 self.project_state_virtual_fallback_mut()
@@ -386,11 +410,29 @@ impl Session {
         &self,
         path: impl AsRef<SystemPath>,
     ) -> Option<&ProjectState> {
-        let path = path.as_ref();
-        self.projects
-            .range(..=path.to_path_buf())
-            .rfind(|(workspace_root, _)| path.starts_with(workspace_root))
+        self.project_entry_for_path(path)
             .map(|(_, project)| project)
+    }
+
+    fn project_entry_for_path(
+        &self,
+        path: impl AsRef<SystemPath>,
+    ) -> Option<(&SystemPathBuf, &ProjectState)> {
+        let path = path.as_ref();
+        let mut closest_workspace = None;
+        let mut closest_chalk = None;
+
+        for entry @ (routing_root, state) in self.projects.range(..=path.to_path_buf()) {
+            if !path.starts_with(routing_root) {
+                continue;
+            }
+            match state.kind() {
+                ProjectKind::Workspace => closest_workspace = Some(entry),
+                ProjectKind::Chalk => closest_chalk = Some(entry),
+            }
+        }
+
+        closest_chalk.or(closest_workspace)
     }
 
     // TODO: While ty supports multiple workspace folders, we still
@@ -413,18 +455,112 @@ impl Session {
         path: &AnySystemPath,
         changes: &[ChangeEvent],
     ) -> ChangeResult {
-        let overrides = path.as_system().and_then(|root| {
-            self.workspaces()
-                .for_path(root)?
-                .settings()
-                .project_options_overrides()
-                .cloned()
-        });
+        let target_routing_root = match path {
+            AnySystemPath::System(path) => self
+                .project_entry_for_path(path)
+                .or_else(|| self.projects.first_key_value()),
+            AnySystemPath::SystemVirtual(_) => self.projects.first_key_value(),
+        }
+        .map(|(routing_root, _)| routing_root.clone())
+        .expect("To always have at least one project");
+        let projects: Vec<_> = self
+            .projects
+            .iter()
+            .map(|(routing_root, state)| {
+                let overrides = state
+                    .workspace_root
+                    .as_ref()
+                    .and_then(|workspace_root| self.workspaces.workspaces.get(workspace_root))
+                    .and_then(|workspace| workspace.settings().project_options_overrides())
+                    .cloned();
+                (routing_root.clone(), overrides)
+            })
+            .collect();
 
         self.bump_revision();
 
-        self.project_db_mut(path)
-            .apply_changes(changes, overrides.as_ref())
+        let mut routed_result = None;
+        for (routing_root, overrides) in projects {
+            let Some(state) = self.projects.get_mut(&routing_root) else {
+                continue;
+            };
+            let result = Self::apply_changes_to_project(state, changes, overrides.as_ref());
+            if routing_root == target_routing_root {
+                routed_result = Some(result);
+            }
+        }
+
+        routed_result.expect("The routed project must still exist")
+    }
+
+    fn apply_changes_to_project(
+        state: &mut ProjectState,
+        changes: &[ChangeEvent],
+        overrides: Option<&ty_project::metadata::options::ProjectOptionsOverrides>,
+    ) -> ChangeResult {
+        let result = state.db.apply_changes(changes, overrides);
+
+        if state.chalk_project.as_ref().is_some_and(|chalk_project| {
+            changes
+                .iter()
+                .any(|change| chalk_project.should_refresh(change))
+        }) && let Some(chalk_project) = state.chalk_project.as_mut()
+            && let Err(error) = chalk_project.refresh(&mut state.db)
+        {
+            tracing::error!(
+                "Failed to refresh Chalk sources for project at `{}`: {error}",
+                chalk_project.project().root()
+            );
+        }
+
+        result
+    }
+
+    /// Applies filesystem changes to every persistent project database.
+    ///
+    /// Filesystem watcher events can affect shared dependencies and ignore files, so they must not
+    /// be routed back through a database's internal metadata root. A Chalk database can inherit a
+    /// broader metadata root while remaining keyed by its Chalk routing root.
+    pub(crate) fn apply_changes_to_all(&mut self, changes: &[ChangeEvent]) {
+        let projects: Vec<_> = self
+            .projects
+            .iter()
+            .map(|(routing_root, state)| {
+                let overrides = state
+                    .workspace_root
+                    .as_ref()
+                    .and_then(|workspace_root| self.workspaces.workspaces.get(workspace_root))
+                    .and_then(|workspace| workspace.settings().project_options_overrides())
+                    .cloned();
+                (routing_root.clone(), overrides)
+            })
+            .collect();
+
+        self.bump_revision();
+
+        for (routing_root, overrides) in projects {
+            if let Some(state) = self.projects.get_mut(&routing_root) {
+                Self::apply_changes_to_project(state, changes, overrides.as_ref());
+            }
+        }
+    }
+
+    pub(crate) fn project_routing_roots(&self) -> impl Iterator<Item = &SystemPathBuf> {
+        self.projects.keys()
+    }
+
+    pub(crate) fn project_db_for_routing_root(
+        &self,
+        routing_root: &SystemPath,
+    ) -> Option<&ProjectDatabase> {
+        self.projects.get(routing_root).map(|state| &state.db)
+    }
+
+    pub(crate) fn project_state_for_routing_root_mut(
+        &mut self,
+        routing_root: &SystemPath,
+    ) -> Option<&mut ProjectState> {
+        self.projects.get_mut(routing_root)
     }
 
     /// Returns a mutable iterator over all project databases.
@@ -571,6 +707,7 @@ impl Session {
                 return;
             }
         };
+        let workspace_root = root.clone();
 
         let settings = options.into_settings(&root, client, &*self.native_system);
         let Some(workspace) = self.workspaces.workspaces.get_mut(&root) else {
@@ -656,6 +793,9 @@ impl Session {
         self.projects.insert(
             root.clone(),
             ProjectState {
+                kind: ProjectKind::Workspace,
+                workspace_root: Some(workspace_root),
+                chalk_project: None,
                 db,
                 untracked_files_with_pushed_diagnostics: untracked,
             },
@@ -827,8 +967,22 @@ impl Session {
         //
         // See: https://github.com/astral-sh/ruff/pull/22953#discussion_r2745255350
 
-        // Remove the associated project database.
-        if let Some(project_state) = self.projects.remove(&workspace_path) {
+        // Remove all project databases owned by this workspace, including lazily discovered Chalk
+        // projects whose routing roots can differ from the workspace root.
+        let owned_project_roots: Vec<_> = self
+            .projects
+            .iter()
+            .filter(|(_, state)| state.workspace_root.as_deref() == Some(workspace_path.as_path()))
+            .map(|(routing_root, _)| routing_root.clone())
+            .collect();
+        if !owned_project_roots.is_empty() {
+            self.file_watcher_registration_needs_refresh = true;
+        }
+        for routing_root in owned_project_roots {
+            let Some(project_state) = self.projects.remove(&routing_root) else {
+                continue;
+            };
+
             // Clear diagnostics for any files that had pushed diagnostics in this project.
             for file_uri in project_state.untracked_files_with_pushed_diagnostics {
                 self.clear_diagnostics(client, &file_uri);
@@ -905,7 +1059,6 @@ impl Session {
     /// `ty.experimental.rename` global setting.
     fn register_capabilities(&mut self, client: &Client) {
         static DIAGNOSTIC_REGISTRATION_ID: &str = "ty/textDocument/diagnostic";
-        static FILE_WATCHER_REGISTRATION_ID: &str = "ty/workspace/didChangeWatchedFiles";
 
         let mut registrations = vec![];
         let mut unregistrations = vec![];
@@ -957,26 +1110,50 @@ impl Session {
             }
         }
 
-        if let Some(register_options) = self.file_watcher_registration_options() {
-            if self
-                .registrations
-                .contains(DidChangeWatchedFilesNotification::METHOD.as_str())
-            {
-                unregistrations.push(Unregistration {
-                    id: FILE_WATCHER_REGISTRATION_ID.into(),
-                    method: DidChangeWatchedFilesNotification::METHOD.into(),
-                });
-            }
-            registrations.push(Registration {
-                id: FILE_WATCHER_REGISTRATION_ID.into(),
-                method: DidChangeWatchedFilesNotification::METHOD.into(),
-                register_options: Some(serde_json::to_value(register_options).unwrap()),
-            });
-        }
+        self.append_file_watcher_registration_changes(&mut registrations, &mut unregistrations);
+        self.file_watcher_registration_needs_refresh = false;
 
         // First, unregister any existing capabilities and then register or re-register them.
         self.unregister_dynamic_capability(client, unregistrations);
         self.register_dynamic_capability(client, registrations);
+    }
+
+    /// Refreshes file watching after a persistent project was added lazily.
+    pub(crate) fn refresh_file_watcher_registration_if_needed(&mut self, client: &Client) {
+        if !std::mem::take(&mut self.file_watcher_registration_needs_refresh) {
+            return;
+        }
+
+        let mut registrations = vec![];
+        let mut unregistrations = vec![];
+        self.append_file_watcher_registration_changes(&mut registrations, &mut unregistrations);
+        self.unregister_dynamic_capability(client, unregistrations);
+        self.register_dynamic_capability(client, registrations);
+    }
+
+    fn append_file_watcher_registration_changes(
+        &self,
+        registrations: &mut Vec<Registration>,
+        unregistrations: &mut Vec<Unregistration>,
+    ) {
+        let Some(register_options) = self.file_watcher_registration_options() else {
+            return;
+        };
+
+        if self
+            .registrations
+            .contains(DidChangeWatchedFilesNotification::METHOD.as_str())
+        {
+            unregistrations.push(Unregistration {
+                id: FILE_WATCHER_REGISTRATION_ID.into(),
+                method: DidChangeWatchedFilesNotification::METHOD.into(),
+            });
+        }
+        registrations.push(Registration {
+            id: FILE_WATCHER_REGISTRATION_ID.into(),
+            method: DidChangeWatchedFilesNotification::METHOD.into(),
+            register_options: Some(serde_json::to_value(register_options).unwrap()),
+        });
     }
 
     /// Registers a list of dynamic capabilities with the client.
@@ -1122,6 +1299,11 @@ impl Session {
                 .workspace_settings_for_document(document_handle.notebook_or_file_path())
                 .unwrap_or_else(|| Arc::new(WorkspaceSettings::default())),
             position_encoding: self.position_encoding,
+            chalk_project: self
+                .project_state(document_handle.notebook_or_file_path())
+                .chalk_project
+                .as_ref()
+                .map(ActiveChalkProject::input),
             document: document_handle,
             client_name: self.client_name,
         })
@@ -1148,9 +1330,13 @@ impl Session {
         SessionSnapshot {
             projects: self
                 .projects
-                .values()
-                .map(|project| &project.db)
-                .cloned()
+                .iter()
+                .map(|(routing_root, project)| RoutedProject {
+                    routing_root: routing_root.clone(),
+                    workspace_root: project.workspace_root.clone(),
+                    kind: project.kind(),
+                    db: project.db.clone(),
+                })
                 .collect(),
             index: self.index.clone().unwrap(),
             global_settings: self.global_settings.clone(),
@@ -1197,6 +1383,7 @@ impl Session {
     /// Returns a handle to the opened document.
     pub(crate) fn open_notebook_document(&mut self, document: NotebookDocument) -> DocumentHandle {
         let handle = self.index_mut().open_notebook_document(document);
+        self.ensure_chalk_project_for_document(&handle, None);
         self.open_document_in_db(&handle, None);
         handle
     }
@@ -1208,8 +1395,234 @@ impl Session {
     pub(crate) fn open_text_document(&mut self, document: TextDocument) -> DocumentHandle {
         let language_id = document.language_id();
         let handle = self.index_mut().open_text_document(document);
+        self.ensure_chalk_project_for_document(&handle, Some(language_id));
         self.open_document_in_db(&handle, Some(language_id));
         handle
+    }
+
+    fn ensure_chalk_project_for_document(
+        &mut self,
+        document: &DocumentHandle,
+        language_id: Option<LanguageId>,
+    ) {
+        let is_chalk_sql = document
+            .notebook_or_file_path()
+            .as_system()
+            .is_some_and(|path| is_chalk_sql_path(path));
+        if matches!(language_id, Some(LanguageId::Other)) && !is_chalk_sql {
+            return;
+        }
+
+        let AnySystemPath::System(system_path) = document.notebook_or_file_path() else {
+            return;
+        };
+
+        // Once a file is actively routed to a Chalk project, marker changes do not affect that
+        // routing for the remainder of the session.
+        if self
+            .project_state_for_path(system_path)
+            .is_some_and(|state| state.kind() == ProjectKind::Chalk)
+        {
+            return;
+        }
+
+        let Some(chalk_project) = discover_chalk_project(
+            self.project_db(document.notebook_or_file_path()).system(),
+            system_path,
+        ) else {
+            return;
+        };
+        let routing_root = chalk_project.root().to_path_buf();
+
+        if self
+            .projects
+            .get(&routing_root)
+            .is_some_and(|state| state.kind() == ProjectKind::Chalk)
+        {
+            return;
+        }
+
+        let workspace_root = self.workspaces.root_for_path(system_path).cloned();
+        let migrated_documents = self.open_documents_migrating_to(&routing_root);
+        let Some(mut db) =
+            self.create_chalk_project_database(&chalk_project, workspace_root.as_deref())
+        else {
+            return;
+        };
+        let mut chalk_project = match ActiveChalkProject::new(&db, chalk_project) {
+            Ok(chalk_project) => chalk_project,
+            Err(error) => {
+                tracing::error!(
+                    "Failed to collect Chalk sources for project at `{routing_root}`: {error}"
+                );
+                return;
+            }
+        };
+
+        for (_, migrated_document, is_python) in &migrated_documents {
+            if *is_python && migrated_document.key() != document.key() {
+                Self::open_document_in_project(&mut db, migrated_document);
+            }
+            if let AnySystemPath::System(path) = migrated_document.notebook_or_file_path()
+                && let Ok(file) = system_path_to_file(&db, path)
+            {
+                chalk_project.open_source(&db, file);
+            }
+        }
+        if let Err(error) = chalk_project.refresh(&mut db) {
+            tracing::error!(
+                "Failed to collect open Chalk sources for project at `{routing_root}`: {error}"
+            );
+            return;
+        }
+
+        for (old_routing_root, migrated_document, is_python) in &migrated_documents {
+            if *is_python && let Some(state) = self.projects.get_mut(old_routing_root) {
+                Self::close_document_in_project(&mut state.db, migrated_document);
+            }
+        }
+
+        let previous = self.projects.remove(&routing_root);
+        let untracked_files_with_pushed_diagnostics = previous
+            .map(|state| state.untracked_files_with_pushed_diagnostics)
+            .unwrap_or_default();
+
+        self.projects.insert(
+            routing_root,
+            ProjectState {
+                kind: ProjectKind::Chalk,
+                workspace_root,
+                untracked_files_with_pushed_diagnostics,
+                chalk_project: Some(chalk_project),
+                db,
+            },
+        );
+        self.file_watcher_registration_needs_refresh = true;
+    }
+
+    fn create_chalk_project_database(
+        &self,
+        chalk_project: &ChalkProject,
+        workspace_root: Option<&SystemPath>,
+    ) -> Option<ProjectDatabase> {
+        let root = chalk_project.root();
+        let index = self.index.as_ref()?.clone();
+        let system = LSPSystem::new(index, self.native_system.clone());
+        let workspace_settings = workspace_root
+            .and_then(|workspace_root| self.workspaces.workspaces.get(workspace_root))
+            .map(Workspace::settings);
+        let configuration_file = workspace_settings
+            .and_then(WorkspaceSettings::project_options_overrides)
+            .and_then(|overrides| overrides.config_file_override.as_ref());
+
+        let project = if let Some(configuration_file) = configuration_file {
+            ProjectMetadata::from_config_file(configuration_file.clone(), root, &system)
+        } else {
+            ProjectMetadata::discover(root, &system)
+        }
+        .context("Failed to discover Chalk project configuration")
+        .and_then(|mut metadata| {
+            metadata
+                .apply_configuration_files(&system)
+                .context("Failed to apply configuration files")?;
+
+            if let Some(overrides) =
+                workspace_settings.and_then(WorkspaceSettings::project_options_overrides)
+            {
+                metadata.apply_overrides(overrides);
+            }
+
+            ProjectDatabase::fallible(metadata, system.clone())
+        });
+
+        let mut db = match project {
+            Ok(db) => db,
+            Err(error) => {
+                tracing::error!(
+                    "Failed to create Chalk project at `{root}`: {error:#}. \
+                     Falling back to default settings"
+                );
+
+                let Ok(mut metadata) = ProjectMetadata::from_options(
+                    Options::default(),
+                    root.to_path_buf(),
+                    None,
+                    &UseDefaultStrategy,
+                );
+                if let Some(overrides) =
+                    workspace_settings.and_then(WorkspaceSettings::project_options_overrides)
+                {
+                    metadata.apply_overrides(overrides);
+                }
+                ProjectDatabase::use_defaults(metadata, system)
+            }
+        };
+
+        if let Some(check_mode) = self.global_settings.diagnostic_mode().to_check_mode() {
+            db.set_check_mode(check_mode);
+        }
+
+        Some(db)
+    }
+
+    fn open_documents_migrating_to(
+        &self,
+        chalk_root: &SystemPath,
+    ) -> Vec<(SystemPathBuf, DocumentHandle, bool)> {
+        self.index()
+            .file_documents()
+            .filter_map(|document| {
+                let is_python = document.language_id() != Some(LanguageId::Other);
+                let handle = DocumentHandle::from_document(document);
+                if !is_python
+                    && !handle
+                        .notebook_or_file_path()
+                        .as_system()
+                        .is_some_and(|path| is_chalk_sql_path(path))
+                {
+                    return None;
+                }
+                Some((handle, is_python))
+            })
+            .filter_map(|(document, is_python)| {
+                let AnySystemPath::System(path) = document.notebook_or_file_path() else {
+                    return None;
+                };
+                if !path.starts_with(chalk_root) {
+                    return None;
+                }
+
+                let (old_routing_root, state) = self.project_entry_for_path(path)?;
+                if state.kind() == ProjectKind::Chalk {
+                    return None;
+                }
+
+                Some((old_routing_root.clone(), document, is_python))
+            })
+            .collect()
+    }
+
+    fn close_document_in_project(db: &mut ProjectDatabase, document: &DocumentHandle) {
+        let AnySystemPath::System(path) = document.notebook_or_file_path() else {
+            return;
+        };
+        if let Some(file) = db.files().try_system(db, path) {
+            db.project().close_file(db, file);
+        }
+    }
+
+    fn open_document_in_project(db: &mut ProjectDatabase, document: &DocumentHandle) {
+        let AnySystemPath::System(path) = document.notebook_or_file_path() else {
+            return;
+        };
+        let Ok(file) = system_path_to_file(db, path) else {
+            tracing::warn!("Failed to migrate open file {path} into Chalk project");
+            return;
+        };
+        let project = db.project();
+        if project.is_file_included(db, path).is_included() {
+            project.open_file(db, file);
+        }
     }
 
     fn open_document_in_db(&mut self, document: &DocumentHandle, language_id: Option<LanguageId>) {
@@ -1220,9 +1633,10 @@ impl Session {
         // that the server didn't need the file yet.
         let is_maybe_new_system_file = path.as_system().is_some_and(|system_path| {
             let db = self.project_db(path);
-            db.files()
-                .try_system(db, system_path)
-                .is_none_or(|file| !file.exists(db))
+            db.files().try_system(db, system_path).map_or_else(
+                || !self.native_system.is_file(system_path),
+                |file| !file.exists(db),
+            )
         });
 
         // When we know the document isn't a Python source file
@@ -1232,6 +1646,13 @@ impl Session {
 
         match path {
             AnySystemPath::System(system_path) => {
+                let state = self.project_state_mut(path);
+                if let Ok(file) = system_path_to_file(&state.db, system_path)
+                    && let Some(chalk_project) = state.chalk_project.as_mut()
+                {
+                    chalk_project.open_source(&state.db, file);
+                }
+
                 let event = if is_maybe_new_system_file {
                     ChangeEvent::Created {
                         path: system_path.clone(),
@@ -1374,6 +1795,7 @@ pub(crate) struct DocumentSnapshot {
     global_settings: Arc<GlobalSettings>,
     workspace_settings: Arc<WorkspaceSettings>,
     position_encoding: PositionEncoding,
+    chalk_project: Option<ChalkProjectInput>,
     document: DocumentHandle,
     client_name: ClientName,
 }
@@ -1397,6 +1819,10 @@ impl DocumentSnapshot {
     /// Returns the client settings for the workspace that this document belongs to.
     pub(crate) fn workspace_settings(&self) -> &WorkspaceSettings {
         &self.workspace_settings
+    }
+
+    pub(crate) fn chalk_project(&self) -> Option<ChalkProjectInput> {
+        self.chalk_project
     }
 
     /// Returns the result of the document query for this snapshot.
@@ -1428,6 +1854,33 @@ impl DocumentSnapshot {
     }
 }
 
+pub(crate) struct RoutedProject {
+    routing_root: SystemPathBuf,
+    workspace_root: Option<SystemPathBuf>,
+    kind: ProjectKind,
+
+    // Keep the database last for the same drop-order reason as `SessionSnapshot::projects`.
+    db: ProjectDatabase,
+}
+
+impl RoutedProject {
+    pub(crate) fn routing_root(&self) -> &SystemPath {
+        &self.routing_root
+    }
+
+    pub(crate) fn workspace_root(&self) -> Option<&SystemPath> {
+        self.workspace_root.as_deref()
+    }
+
+    pub(crate) fn kind(&self) -> ProjectKind {
+        self.kind
+    }
+
+    pub(crate) fn db(&self) -> &ProjectDatabase {
+        &self.db
+    }
+}
+
 /// An immutable snapshot of the current state of [`Session`].
 pub(crate) struct SessionSnapshot {
     index: Arc<Index>,
@@ -1447,12 +1900,37 @@ pub(crate) struct SessionSnapshot {
     /// dropped after all other fields, which ensures that
     /// Salsa's cancellation blocks until all fields are dropped (and not only
     /// waits for the db to be dropped while we still hold on to the `Index`).
-    projects: Vec<ProjectDatabase>,
+    projects: Vec<RoutedProject>,
 }
 
 impl SessionSnapshot {
-    pub(crate) fn projects(&self) -> &[ProjectDatabase] {
+    pub(crate) fn projects(&self) -> impl Iterator<Item = &ProjectDatabase> {
+        self.projects.iter().map(RoutedProject::db)
+    }
+
+    pub(crate) fn routed_projects(&self) -> &[RoutedProject] {
         &self.projects
+    }
+
+    pub(crate) fn project_owns_file(&self, project: &RoutedProject, file: File) -> bool {
+        let path = file.path(project.db());
+        let Some(path) = path.as_system_path() else {
+            return true;
+        };
+
+        match self
+            .projects
+            .iter()
+            .filter(|candidate| path.starts_with(candidate.routing_root()))
+            .max_by_key(|candidate| {
+                (
+                    candidate.kind() == ProjectKind::Chalk,
+                    candidate.routing_root().as_str().len(),
+                )
+            }) {
+            Some(owner) => owner.routing_root() == project.routing_root(),
+            None => project.kind() == ProjectKind::Workspace,
+        }
     }
 
     pub(crate) fn index(&self) -> &Index {
@@ -1573,6 +2051,14 @@ impl Workspaces {
             .range(..=path.to_path_buf())
             .rfind(|(workspace_root, _)| path.starts_with(workspace_root))
             .map(|(_, db)| db)
+    }
+
+    fn root_for_path(&self, path: impl AsRef<SystemPath>) -> Option<&SystemPathBuf> {
+        let path = path.as_ref();
+        self.workspaces
+            .range(..=path.to_path_buf())
+            .rfind(|(workspace_root, _)| path.starts_with(workspace_root))
+            .map(|(workspace_root, _)| workspace_root)
     }
 
     /// Returns the client settings for the workspace at the given path, [`None`] if there's no
@@ -1929,9 +2415,6 @@ impl DocumentHandle {
                         {
                             db.project().remove_file(db, file);
                         }
-
-                        // Bump the file's revision back to using the file system's revision.
-                        file.sync(db);
                     } else {
                         // This can only fail when the path is a directory or it doesn't exists but the
                         // file should exists for this handler in this branch. This is because every
@@ -1955,8 +2438,6 @@ impl DocumentHandle {
                     if let Some(virtual_file) = db.files().try_virtual_file(virtual_path) {
                         db.project().close_file(db, virtual_file.file());
                         virtual_file.close(db);
-                        // Bump the file's revision back to using the file system's revision.
-                        virtual_file.sync(db);
                     } else {
                         tracing::warn!("Salsa virtual file does not exists for {}", virtual_path);
                     }
@@ -1968,10 +2449,44 @@ impl DocumentHandle {
             }
         };
 
-        session.bump_revision();
+        if !is_cell {
+            match path {
+                AnySystemPath::System(system_path) => {
+                    session.apply_changes(
+                        path,
+                        &[ChangeEvent::file_content_changed(system_path.clone())],
+                    );
+
+                    let state = session.project_state_mut(path);
+                    if let Some(file) = state.db.files().try_system(&state.db, system_path)
+                        && let Some(chalk_project) = state.chalk_project.as_mut()
+                        && chalk_project.close_source(file)
+                        && let Err(error) = chalk_project.refresh(&mut state.db)
+                    {
+                        tracing::error!(
+                            "Failed to refresh Chalk sources after closing `{system_path}`: {error}"
+                        );
+                    }
+                }
+                AnySystemPath::SystemVirtual(virtual_path) => {
+                    for db in session.projects_mut() {
+                        File::sync_virtual_path(db, virtual_path);
+                    }
+                }
+            }
+        }
+
+        if is_cell || matches!(path, AnySystemPath::SystemVirtual(_)) {
+            session.bump_revision();
+        }
 
         Ok(requires_clear_diagnostics)
     }
+}
+
+fn is_chalk_sql_path(path: &SystemPath) -> bool {
+    path.file_name()
+        .is_some_and(|name| name.ends_with(".chalk.sql"))
 }
 
 /// Warns about unknown options received by the server.

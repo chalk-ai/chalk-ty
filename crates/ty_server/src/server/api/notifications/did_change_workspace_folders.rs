@@ -54,6 +54,7 @@ impl SyncNotificationHandler for DidChangeWorkspaceFoldersHandler {
                 }
             }
         }
+        let mut removed_workspace_folder = false;
         for folder in params.event.removed {
             // It would perhaps be more efficient to do this "in bulk"
             // in one step (since at present, the session needs to
@@ -66,12 +67,20 @@ impl SyncNotificationHandler for DidChangeWorkspaceFoldersHandler {
             // multiple workspace folders at a time is also likely to
             // be small. So we prefer a simpler implementation for now.
             // ---AG
-            if let Err(err) = session.remove_workspace_folder(client, &folder.uri) {
-                tracing::error!(
-                    "Failed to remove workspace folder `{uri}`: {err}",
-                    uri = folder.uri,
-                );
+            match session.remove_workspace_folder(client, &folder.uri) {
+                Ok(()) => {
+                    removed_workspace_folder = true;
+                }
+                Err(err) => {
+                    tracing::error!(
+                        "Failed to remove workspace folder `{uri}`: {err}",
+                        uri = folder.uri,
+                    );
+                }
             }
+        }
+        if removed_workspace_folder {
+            session.refresh_file_watcher_registration_if_needed(client);
         }
         if added_workspace_folder {
             session.request_uninitialized_workspace_folder_configurations(client);
