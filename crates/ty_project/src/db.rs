@@ -835,12 +835,44 @@ pub(crate) mod testing {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use ruff_db::Db as _;
-    use ruff_db::files::FileRootKind;
+    use ruff_db::diagnostic::Diagnostic;
+    use ruff_db::files::{File, FileRootKind, system_path_to_file};
     use ruff_db::system::{SystemPathBuf, TestSystem};
     use ty_module_resolver::list_modules;
 
-    use crate::{ProjectDatabase, ProjectMetadata};
+    use crate::{CheckMode, ProgressReporter, ProjectDatabase, ProjectMetadata};
+
+    #[derive(Default)]
+    struct RecordingReporter {
+        files: usize,
+        checked_files: AtomicUsize,
+        checked_diagnostics: AtomicUsize,
+        project_diagnostic_calls: usize,
+    }
+
+    impl ProgressReporter for RecordingReporter {
+        fn set_files(&mut self, files: usize) {
+            self.files = files;
+        }
+
+        fn report_checked_file(
+            &self,
+            _db: &ProjectDatabase,
+            _file: File,
+            diagnostics: &[Diagnostic],
+        ) {
+            self.checked_files.fetch_add(1, Ordering::Relaxed);
+            self.checked_diagnostics
+                .fetch_add(diagnostics.len(), Ordering::Relaxed);
+        }
+
+        fn report_diagnostics(&mut self, _db: &ProjectDatabase, _diagnostics: Vec<Diagnostic>) {
+            self.project_diagnostic_calls += 1;
+        }
+    }
 
     #[test]
     fn frozen_inputs_support_a_one_shot_check() -> anyhow::Result<()> {
@@ -855,6 +887,34 @@ mod tests {
         db.freeze();
 
         assert_eq!(db.check().len(), 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_file_check_deduplicates_without_project_diagnostics() -> anyhow::Result<()> {
+        let system = TestSystem::default();
+        let project = SystemPathBuf::from("/project");
+        let path = project.join("main.py");
+        system
+            .memory_file_system()
+            .write_file_all(&path, "def invalid(:\n")?;
+
+        let metadata = ProjectMetadata::discover(&project, &system)?;
+        let mut db = ProjectDatabase::fallible(metadata, system)?;
+        db.set_check_mode(CheckMode::OpenFiles);
+        let file = system_path_to_file(&db, &path)?;
+        let mut reporter = RecordingReporter::default();
+
+        db.check_files_with_reporter([file, file], &mut reporter);
+
+        assert_eq!(reporter.files, 1);
+        assert_eq!(reporter.checked_files.load(Ordering::Relaxed), 1);
+        assert_ne!(reporter.checked_diagnostics.load(Ordering::Relaxed), 0);
+        assert_eq!(reporter.project_diagnostic_calls, 0);
+
+        db.report_project_diagnostics(&mut reporter);
+        assert_eq!(reporter.project_diagnostic_calls, 1);
 
         Ok(())
     }
