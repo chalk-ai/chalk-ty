@@ -373,3 +373,161 @@ fn is_source_candidate(path: &SystemPath) -> bool {
             .file_name()
             .is_some_and(|name| name.ends_with(".chalk.sql"))
 }
+
+#[cfg(test)]
+mod tests {
+    use ruff_db::system::{InMemorySystem, System, SystemPath, SystemPathBuf};
+
+    use super::{ChalkProject, discover_chalk_project};
+
+    struct TestProject {
+        system: InMemorySystem,
+        root: SystemPathBuf,
+        project: ChalkProject,
+    }
+
+    impl TestProject {
+        fn new(config_name: &str, config: &str) -> Self {
+            let system = InMemorySystem::new("/project".into());
+            let root = system.current_directory().to_path_buf();
+            system
+                .fs()
+                .write_file(root.join(config_name), config)
+                .unwrap();
+            let project = discover_chalk_project(&system, &root.join("src/app.py")).unwrap();
+            Self {
+                system,
+                root,
+                project,
+            }
+        }
+
+        fn write_files<'a>(&self, files: impl IntoIterator<Item = (&'a str, &'a str)>) {
+            self.system
+                .fs()
+                .write_files_all(
+                    files
+                        .into_iter()
+                        .map(|(path, contents)| (self.root.join(path), contents)),
+                )
+                .unwrap();
+        }
+
+        fn relative_sources(&self) -> Vec<String> {
+            self.project
+                .source_files(&self.system)
+                .unwrap()
+                .into_iter()
+                .map(|path| path.strip_prefix(&self.root).unwrap().to_string())
+                .collect()
+        }
+    }
+
+    #[test]
+    fn discovers_nearest_yaml_or_yml_marker() {
+        let system = InMemorySystem::new("/workspace".into());
+        system
+            .fs()
+            .write_files_all([
+                (SystemPathBuf::from("/workspace/chalk.yml"), ""),
+                (SystemPathBuf::from("/workspace/nested/chalk.yaml"), ""),
+            ])
+            .unwrap();
+
+        let yml = discover_chalk_project(&system, SystemPath::new("/workspace/file.py")).unwrap();
+        assert_eq!(yml.root(), SystemPath::new("/workspace"));
+        assert_eq!(yml.config_path(), SystemPath::new("/workspace/chalk.yml"));
+
+        let yaml =
+            discover_chalk_project(&system, SystemPath::new("/workspace/nested/src/file.py"))
+                .unwrap();
+        assert_eq!(yaml.root(), SystemPath::new("/workspace/nested"));
+        assert_eq!(
+            yaml.config_path(),
+            SystemPath::new("/workspace/nested/chalk.yaml")
+        );
+
+        assert!(discover_chalk_project(&system, SystemPath::new("/unrelated/file.py")).is_none());
+    }
+
+    #[test]
+    fn applies_built_ins_nested_gitignore_and_extensions_deterministically() {
+        let test = TestProject::new("chalk.yaml", "{}");
+        test.write_files([
+            ("z.py", ""),
+            ("a.chalk.sql", ""),
+            ("nested/.gitignore", "ignored.py\n"),
+            ("nested/ignored.py", ""),
+            ("nested/keep.py", ""),
+            ("node_modules/package.py", ""),
+            ("venv/lib.py", ""),
+            ("notes.sql", ""),
+            ("module.pyi", ""),
+        ]);
+
+        assert_eq!(
+            test.relative_sources(),
+            ["a.chalk.sql", "nested/keep.py", "z.py"]
+        );
+        assert!(
+            test.project
+                .contains_source(&test.system, &test.root.join("nested/keep.py"))
+                .unwrap()
+        );
+        assert!(
+            !test
+                .project
+                .contains_source(&test.system, &test.root.join("nested/ignored.py"))
+                .unwrap()
+        );
+        assert!(
+            !test
+                .project
+                .contains_source(&test.system, SystemPath::new("/other/file.py"))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn applies_default_chalkignore() {
+        let test = TestProject::new("chalk.yml", "{}");
+        test.write_files([
+            (".chalkignore", "ignored.py\n"),
+            ("ignored.py", ""),
+            ("keep.py", ""),
+        ]);
+
+        assert_eq!(test.relative_sources(), ["keep.py"]);
+    }
+
+    #[test]
+    fn applies_configured_default_environment_chalkignore() {
+        let test = TestProject::new(
+            "chalk.yaml",
+            "chalkignore: project.ignore\nenvironments:\n  default:\n    chalkignore: default.ignore\n",
+        );
+        test.write_files([
+            ("project.ignore", "project-only.py\n"),
+            ("default.ignore", "default-only.py\n"),
+            ("project-only.py", ""),
+            ("default-only.py", ""),
+            ("keep.py", ""),
+        ]);
+
+        assert_eq!(test.relative_sources(), ["keep.py", "project-only.py"]);
+    }
+
+    #[test]
+    fn applies_project_level_configured_chalkignore() {
+        let test = TestProject::new("chalk.yaml", "chalkignore: custom.ignore\n");
+        test.write_files([
+            (".chalkignore", "default-only.py\n"),
+            ("custom.ignore", "custom-only.py\n"),
+            ("default-only.py", ""),
+            ("custom-only.py", ""),
+            ("keep.py", ""),
+        ]);
+
+        assert_eq!(test.relative_sources(), ["default-only.py", "keep.py"]);
+    }
+}
