@@ -8,6 +8,7 @@ use lsp_types::{
     CallHierarchyIncomingCallsRequest, CallHierarchyOutgoingCallsRequest,
     CallHierarchyPrepareRequest,
 };
+use ruff_db::system::SystemPath;
 
 use crate::TestServerBuilder;
 
@@ -263,6 +264,34 @@ def use_b():
       }
     ]
     "#);
+
+    Ok(())
+}
+
+#[test]
+fn overlapping_chalk_project_routes_follow_up_calls_once() -> anyhow::Result<()> {
+    let workspace = SystemPath::new("workspace");
+    let file = workspace.join("child/foo.py");
+    let content = r#"def helper():
+    pass
+
+def caller():
+    helper()
+"#;
+    let mut server = TestServerBuilder::new()?
+        .with_workspace(workspace, None)?
+        .with_file(workspace.join("ty.toml"), "")?
+        .with_file(workspace.join("child/chalk.yml"), "{}")?
+        .with_file(&file, content)?
+        .build()
+        .wait_until_workspaces_are_initialized();
+    server.open_text_document(&file, content, 1);
+
+    let helper = prepare(&mut server, &file, Position::new(0, 4)).unwrap();
+    assert_eq!(incoming(&mut server, helper[0].clone()).unwrap().len(), 1);
+
+    let caller = prepare(&mut server, &file, Position::new(3, 4)).unwrap();
+    assert_eq!(outgoing(&mut server, caller[0].clone()).unwrap().len(), 1);
 
     Ok(())
 }

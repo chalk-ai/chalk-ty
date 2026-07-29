@@ -5,6 +5,7 @@ use lsp_types::{
     WorkspaceDiagnosticReport, WorkspaceDocumentDiagnosticReport,
 };
 use ruff_db::system::SystemPath;
+use serde_json::{Map, json};
 use ty_server::{ClientOptions, DiagnosticMode, GlobalOptions, WorkspaceOptions};
 
 use crate::{
@@ -14,6 +15,286 @@ use crate::{
         shutdown_and_await_workspace_diagnostic,
     },
 };
+
+#[test]
+fn document_diagnostics_isolate_sibling_chalk_projects() -> Result<()> {
+    let workspace = SystemPath::new("workspace");
+    let first_file = workspace.join("first/main.py");
+    let second_file = workspace.join("second/main.py");
+    let first_source = "\
+from chalk import online
+
+@online
+def root():
+    abs(\"first\")
+";
+    let updated_first_source = "\
+from chalk import online
+
+@online
+def root():
+    abs(\"third\")
+";
+    let second_source = "\
+from chalk import online
+
+@online
+def root():
+    round(\"second\")
+";
+    let mut server = TestServerBuilder::new()?
+        .with_workspace(workspace, None)?
+        .with_file(workspace.join("ty.toml"), "")?
+        .with_file(workspace.join("first/chalk.yaml"), "{}")?
+        .with_file(&first_file, first_source)?
+        .with_file(workspace.join("second/chalk.yml"), "{}")?
+        .with_file(&second_file, second_source)?
+        .build()
+        .wait_until_workspaces_are_initialized();
+
+    server.open_text_document(&first_file, first_source, 1);
+    server.open_text_document(&second_file, second_source, 1);
+
+    let DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(first) =
+        server.document_diagnostic_request(&first_file, None)
+    else {
+        panic!("the first sibling must return a full document report");
+    };
+    let first_id = first
+        .full_document_diagnostic_report
+        .result_id
+        .clone()
+        .expect("the first sibling's Chalk diagnostic must have a result ID");
+    let first_chalk = first
+        .full_document_diagnostic_report
+        .items
+        .iter()
+        .filter(|diagnostic| diagnostic.source.as_deref() == Some("chalk"))
+        .collect::<Vec<_>>();
+    assert_eq!(first_chalk.len(), 1);
+    let Message::String(first_message) = &first_chalk[0].message else {
+        panic!("Chalk diagnostics must use string messages");
+    };
+    assert!(first_message.contains("Target `builtins.abs`"));
+    assert!(first_message.contains("Observed call: abs(\"first\")"));
+    assert!(!first_message.contains("round"));
+
+    let DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(second) =
+        server.document_diagnostic_request(&second_file, None)
+    else {
+        panic!("the second sibling must return a full document report");
+    };
+    let second_id = second
+        .full_document_diagnostic_report
+        .result_id
+        .clone()
+        .expect("the second sibling's Chalk diagnostic must have a result ID");
+    let second_chalk = second
+        .full_document_diagnostic_report
+        .items
+        .iter()
+        .filter(|diagnostic| diagnostic.source.as_deref() == Some("chalk"))
+        .collect::<Vec<_>>();
+    assert_eq!(second_chalk.len(), 1);
+    let Message::String(second_message) = &second_chalk[0].message else {
+        panic!("Chalk diagnostics must use string messages");
+    };
+    assert!(second_message.contains("Target `builtins.round`"));
+    assert!(second_message.contains("Observed call: round(\"second\")"));
+    assert!(!second_message.contains("abs"));
+
+    server.change_text_document(
+        &first_file,
+        vec![
+            lsp_types::TextDocumentContentChangeEvent::TextDocumentContentChangeWholeDocument(
+                lsp_types::TextDocumentContentChangeWholeDocument {
+                    text: updated_first_source.to_owned(),
+                },
+            ),
+        ],
+        2,
+    );
+    let DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(updated_first) =
+        server.document_diagnostic_request(&first_file, Some(first_id.clone()))
+    else {
+        panic!("the first sibling's edit must invalidate its document report");
+    };
+    assert_ne!(
+        updated_first
+            .full_document_diagnostic_report
+            .result_id
+            .as_ref(),
+        Some(&first_id)
+    );
+    let updated_first_chalk = updated_first
+        .full_document_diagnostic_report
+        .items
+        .iter()
+        .filter(|diagnostic| diagnostic.source.as_deref() == Some("chalk"))
+        .collect::<Vec<_>>();
+    assert_eq!(updated_first_chalk.len(), 1);
+    let Message::String(updated_first_message) = &updated_first_chalk[0].message else {
+        panic!("Chalk diagnostics must use string messages");
+    };
+    assert!(updated_first_message.contains("Observed call: abs(\"third\")"));
+    assert!(!updated_first_message.contains("round"));
+
+    assert!(matches!(
+        server.document_diagnostic_request(&second_file, Some(second_id)),
+        DocumentDiagnosticReport::RelatedUnchangedDocumentDiagnosticReport(_)
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn workspace_diagnostics_partition_nested_chalk_projects() -> Result<()> {
+    let workspace = SystemPath::new("workspace");
+    let parent_file = workspace.join("parent.py");
+    let first_file = workspace.join("first/main.py");
+    let second_file = workspace.join("second/main.py");
+    let source = "does_not_exist()";
+    let mut server = TestServerBuilder::new()?
+        .with_initialization_options(
+            ClientOptions::default().with_diagnostic_mode(DiagnosticMode::Workspace),
+        )
+        .with_workspace(workspace, None)?
+        .with_file(workspace.join("ty.toml"), "")?
+        .with_file(&parent_file, source)?
+        .with_file(workspace.join("first/chalk.yaml"), "{}")?
+        .with_file(&first_file, source)?
+        .with_file(workspace.join("second/chalk.yml"), "{}")?
+        .with_file(&second_file, source)?
+        .build()
+        .wait_until_workspaces_are_initialized();
+
+    // Opening one file in each Chalk project creates the persistent sibling routes. Both lazy
+    // databases discover the workspace-level `ty.toml`, so their internal ty roots overlap.
+    server.open_text_document(&first_file, source, 1);
+    server.open_text_document(&second_file, source, 1);
+
+    let diagnostics =
+        condensed_workspace_diagnostic_snapshot(server.workspace_diagnostic_request(None, None));
+    for path in [
+        "workspace/parent.py",
+        "workspace/first/main.py",
+        "workspace/second/main.py",
+    ] {
+        assert_eq!(
+            diagnostics.matches(path).count(),
+            1,
+            "`{path}` should be published by exactly one routed project:\n{diagnostics}"
+        );
+    }
+    assert_eq!(diagnostics.matches("[ERROR]").count(), 3);
+
+    Ok(())
+}
+
+#[test]
+fn workspace_diagnostics_report_shared_project_diagnostics_once() -> Result<()> {
+    let workspace = SystemPath::new("workspace");
+    let config = workspace.join("ty.toml");
+    let first_file = workspace.join("first/main.py");
+    let second_file = workspace.join("second/main.py");
+    let source = "";
+    let mut server = TestServerBuilder::new()?
+        .with_initialization_options(
+            ClientOptions::default().with_diagnostic_mode(DiagnosticMode::Workspace),
+        )
+        .with_workspace(workspace, None)?
+        .with_file(
+            &config,
+            r#"
+            [rules]
+            not-a-rule = "error"
+            "#,
+        )?
+        .with_file(workspace.join("first/chalk.yaml"), "{}")?
+        .with_file(&first_file, source)?
+        .with_file(workspace.join("second/chalk.yml"), "{}")?
+        .with_file(&second_file, source)?
+        .build()
+        .wait_until_workspaces_are_initialized();
+
+    server.await_notification::<lsp_types::PublishDiagnosticsNotification>();
+
+    // Both Chalk databases inherit the workspace-level `ty.toml`.
+    server.open_text_document(&first_file, source, 1);
+    server.open_text_document(&second_file, source, 1);
+
+    let diagnostics =
+        condensed_workspace_diagnostic_snapshot(server.workspace_diagnostic_request(None, None));
+    assert_eq!(
+        diagnostics.matches("workspace/ty.toml").count(),
+        1,
+        "the shared configuration diagnostic should be published once:\n{diagnostics}"
+    );
+    assert_eq!(diagnostics.matches("[WARNING]").count(), 1);
+
+    Ok(())
+}
+
+#[test]
+fn workspace_diagnostics_keep_shared_project_roots_separate_across_workspaces() -> Result<()> {
+    let repository = SystemPath::new("repository");
+    let first = repository.join("first");
+    let second = repository.join("second");
+    let first_options = ClientOptions {
+        workspace: WorkspaceOptions {
+            configuration: Some(
+                Map::from_iter([("rules".to_string(), json!({"unresolved-reference": "warn"}))])
+                    .into(),
+            ),
+            ..WorkspaceOptions::default()
+        },
+        ..ClientOptions::default()
+    };
+    let second_options = ClientOptions {
+        workspace: WorkspaceOptions {
+            configuration: Some(
+                Map::from_iter([(
+                    "rules".to_string(),
+                    json!({"unresolved-reference": "error"}),
+                )])
+                .into(),
+            ),
+            ..WorkspaceOptions::default()
+        },
+        ..ClientOptions::default()
+    };
+    let mut server = TestServerBuilder::new()?
+        .with_initialization_options(
+            ClientOptions::default().with_diagnostic_mode(DiagnosticMode::Workspace),
+        )
+        .with_file(
+            repository.join("ty.toml"),
+            r#"
+            [rules]
+            not-a-rule = "error"
+            "#,
+        )?
+        .with_file(first.join("main.py"), "")?
+        .with_file(second.join("main.py"), "")?
+        .with_workspace(&first, Some(first_options))?
+        .with_workspace(&second, Some(second_options))?
+        .build()
+        .wait_until_workspaces_are_initialized();
+
+    server.await_notification::<lsp_types::PublishDiagnosticsNotification>();
+    server.await_notification::<lsp_types::PublishDiagnosticsNotification>();
+
+    let diagnostics =
+        condensed_workspace_diagnostic_snapshot(server.workspace_diagnostic_request(None, None));
+    assert_eq!(
+        diagnostics.matches("repository/ty.toml").count(),
+        2,
+        "each workspace owns its independently configured project diagnostics:\n{diagnostics}"
+    );
+    assert_eq!(diagnostics.matches("[WARNING]").count(), 2);
+
+    Ok(())
+}
 
 /// Test that we can initialize multiple workspace folders.
 #[test]

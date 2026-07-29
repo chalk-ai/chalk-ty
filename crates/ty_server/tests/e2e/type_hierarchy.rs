@@ -6,6 +6,7 @@ use lsp_types::{
 use lsp_types::{
     TypeHierarchyPrepareRequest, TypeHierarchySubtypesRequest, TypeHierarchySupertypesRequest,
 };
+use ruff_db::system::SystemPath;
 
 use crate::TestServerBuilder;
 
@@ -30,6 +31,33 @@ class Derived(Base):
     assert_eq!(items[0].name, "Derived");
 
     // Get supertypes of `Derived`
+    let bases = supertypes(&mut server, items[0].clone()).unwrap();
+    assert_eq!(bases.len(), 1);
+    assert_eq!(bases[0].name, "Base");
+
+    Ok(())
+}
+
+#[test]
+fn overlapping_chalk_project_routes_follow_up_types_once() -> anyhow::Result<()> {
+    let workspace = SystemPath::new("workspace");
+    let file = workspace.join("child/foo.py");
+    let content = r#"class Base:
+    pass
+
+class Derived(Base):
+    pass
+"#;
+    let mut server = TestServerBuilder::new()?
+        .with_workspace(workspace, None)?
+        .with_file(workspace.join("ty.toml"), "")?
+        .with_file(workspace.join("child/chalk.yml"), "{}")?
+        .with_file(&file, content)?
+        .build()
+        .wait_until_workspaces_are_initialized();
+    server.open_text_document(&file, content, 1);
+
+    let items = prepare(&mut server, &file, Position::new(3, 8)).unwrap();
     let bases = supertypes(&mut server, items[0].clone()).unwrap();
     assert_eq!(bases.len(), 1);
     assert_eq!(bases[0].name, "Base");
