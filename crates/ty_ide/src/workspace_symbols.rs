@@ -139,6 +139,34 @@ API_BASE_URL = 'https://api.example.com'
     }
 
     #[test]
+    fn workspace_symbols_for_explicit_files_filters_and_deduplicates() {
+        let test = CursorTest::builder()
+            .source(
+                "included.py",
+                "
+def included_symbol():
+    pass
+<CURSOR>",
+            )
+            .source(
+                "excluded.py",
+                "
+def excluded_symbol():
+    pass
+",
+            )
+            .build();
+
+        let included = test.cursor.file;
+        let symbols =
+            workspace_symbols_for_files(&test.db, "symbol", [included, included, included]);
+
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].file, included);
+        assert_eq!(symbols[0].symbol.name, "included_symbol");
+    }
+
+    #[test]
     fn members() {
         let test = CursorTest::builder()
             .source(
