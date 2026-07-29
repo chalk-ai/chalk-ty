@@ -45,6 +45,7 @@ ruff_text_size = { version = "0.0.4", path = "crates/ruff_text_size" }
 ruff_workspace = { version = "0.0.4", path = "crates/ruff_workspace" }
 
 ty = { path = "crates/ty" }
+ty_chalk = { path = "crates/ty_chalk" }
 ty_combine = { version = "0.0.4", path = "crates/ty_combine" }
 ty_completion_bench = { path = "crates/ty_completion_bench" }
 ty_completion_eval = { path = "crates/ty_completion_eval" }
@@ -166,6 +167,7 @@ same-file = { version = "1.0.6" }
 schemars = { version = "1.0.4" }
 seahash = { version = "4.1.0" }
 serde = { version = "1.0.197", features = ["derive"] }
+serde_yaml = "0.9"
 serde-wasm-bindgen = { version = "0.6.4" }
 serde_json = { version = "1.0.113" }
 serde_test = { version = "1.0.152" }
