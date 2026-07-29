@@ -192,6 +192,81 @@ fn workspace_diagnostics_partition_nested_chalk_projects() -> Result<()> {
 }
 
 #[test]
+fn workspace_diagnostics_report_cycles_in_closed_files() -> Result<()> {
+    let workspace = SystemPath::new("workspace");
+    let main = workspace.join("project/main.py");
+    let helper = workspace.join("project/helper.py");
+    let main_source = "\
+from chalk import online
+from project import helper
+
+@online
+def root():
+    helper.first()
+";
+    let helper_source = "\
+from project import main
+
+# chalk: ignore[unsupported-function]
+def first():
+    main.root()
+";
+    let mut server = TestServerBuilder::new()?
+        .with_initialization_options(
+            ClientOptions::default().with_diagnostic_mode(DiagnosticMode::Workspace),
+        )
+        .with_workspace(workspace, None)?
+        .with_file(workspace.join("ty.toml"), "")?
+        .with_file(workspace.join("project/chalk.yml"), "")?
+        .with_file(workspace.join("project/__init__.py"), "")?
+        .with_file(&main, main_source)?
+        .with_file(&helper, helper_source)?
+        .build()
+        .wait_until_workspaces_are_initialized();
+
+    // Opening `main.py` discovers the Chalk project; `helper.py`, which closes the cycle, stays
+    // closed.
+    server.open_text_document(&main, main_source, 1);
+
+    let helper_uri = server.file_uri(&helper);
+    let report = server.workspace_diagnostic_request(None, None);
+    let helper_report =
+        report
+            .items
+            .iter()
+            .find_map(|item| match item {
+                WorkspaceDocumentDiagnosticReport::WorkspaceFullDocumentDiagnosticReport(
+                    report,
+                ) if report.uri == helper_uri => Some(&report.full_document_diagnostic_report),
+                _ => None,
+            })
+            .expect("the closed helper must have a workspace diagnostic report");
+    let chalk_diagnostics = helper_report
+        .items
+        .iter()
+        .filter(|diagnostic| diagnostic.source.as_deref() == Some("chalk"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(chalk_diagnostics.len(), 1);
+    let cycle = chalk_diagnostics[0];
+    assert_eq!(
+        cycle.range,
+        lsp_types::Range::new(Position::new(4, 4), Position::new(4, 15))
+    );
+    assert_eq!(cycle.severity, Some(DiagnosticSeverity::Error));
+    assert_eq!(
+        cycle.code,
+        Some(lsp_types::Code::String("resolver-cycle".to_owned()))
+    );
+    assert_eq!(
+        cycle.message,
+        Message::String("Resolver call graph contains a cycle".to_owned())
+    );
+
+    Ok(())
+}
+
+#[test]
 fn workspace_diagnostics_report_shared_project_diagnostics_once() -> Result<()> {
     let workspace = SystemPath::new("workspace");
     let config = workspace.join("ty.toml");
