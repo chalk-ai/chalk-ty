@@ -2510,3 +2510,692 @@ pub(super) fn warn_about_unknown_options(
     tracing::warn!("{message}");
     client.show_warning_message(message);
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use anyhow::{Context, anyhow};
+    use lsp_types::{LanguageKind, TextDocumentContentChangeEvent};
+    use ruff_db::Db;
+    use ruff_db::files::system_path_to_file;
+    use ruff_db::source::source_text;
+    use ruff_db::system::{InMemorySystem, System, SystemPath, SystemPathBuf};
+    use ruff_python_ast::PythonVersion;
+    use ruff_ranged_value::{RangedValue, ValueSource};
+    use ty_project::metadata::options::ProjectOptionsOverrides;
+    use ty_project::metadata::python_version::SupportedPythonVersion;
+    use ty_project::{CheckMode, Db as _, ProjectDatabase, ProjectMetadata};
+
+    use super::{
+        ChangeEvent, ClientName, CreatedKind, InitializationOptions, ProjectKind, ProjectState,
+        Session, TextDocument, Uri, WorkspaceSettings,
+    };
+    use crate::PositionEncoding;
+    use crate::capabilities::ResolvedClientCapabilities;
+    use crate::system::LSPSystem;
+
+    fn session() -> anyhow::Result<(Session, Arc<InMemorySystem>)> {
+        let native_system = Arc::new(InMemorySystem::new("/workspace".into()));
+        let workspace_root = native_system.current_directory().to_path_buf();
+        let workspace_uri = Uri::from_file_path(workspace_root.as_std_path())
+            .map_err(|()| anyhow!("workspace path must be a valid URI"))?;
+        let mut session = Session::new(
+            ResolvedClientCapabilities::default(),
+            PositionEncoding::UTF8,
+            vec![workspace_uri],
+            InitializationOptions::default(),
+            native_system.clone(),
+            ClientName::Other,
+            true,
+        )?;
+
+        let system = LSPSystem::new(
+            session
+                .index
+                .as_ref()
+                .context("session index must be available")?
+                .clone(),
+            native_system.clone(),
+        );
+        let metadata = ProjectMetadata::new("workspace", workspace_root.clone());
+        let mut db = ProjectDatabase::use_defaults(metadata, system);
+        db.set_check_mode(CheckMode::OpenFiles);
+        session.projects.insert(
+            workspace_root.clone(),
+            ProjectState {
+                kind: ProjectKind::Workspace,
+                workspace_root: Some(workspace_root),
+                untracked_files_with_pushed_diagnostics: Vec::new(),
+                chalk_project: None,
+                db,
+            },
+        );
+
+        Ok((session, native_system))
+    }
+
+    fn open_python_document(
+        session: &mut Session,
+        path: &SystemPath,
+    ) -> anyhow::Result<super::DocumentHandle> {
+        open_document(session, path, "", LanguageKind::Python)
+    }
+
+    fn open_document(
+        session: &mut Session,
+        path: &SystemPath,
+        contents: &str,
+        language_id: LanguageKind,
+    ) -> anyhow::Result<super::DocumentHandle> {
+        let uri = Uri::from_file_path(path.as_std_path())
+            .map_err(|()| anyhow!("document path must be a valid URI"))?;
+        Ok(
+            session.open_text_document(TextDocument::new(
+                uri,
+                contents.to_string(),
+                1,
+                language_id,
+            )),
+        )
+    }
+
+    fn has_open_file(state: &ProjectState, path: &SystemPath) -> bool {
+        state
+            .db
+            .files()
+            .try_system(&state.db, path)
+            .is_some_and(|file| state.db.project().open_files(&state.db).contains(&file))
+    }
+
+    fn source_paths(state: &ProjectState) -> Vec<String> {
+        state
+            .chalk_project
+            .as_ref()
+            .unwrap()
+            .input()
+            .source_files(&state.db)
+            .iter()
+            .map(|file| file.path(&state.db).as_str().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn containing_chalk_project_routes_workspace_document() -> anyhow::Result<()> {
+        let (mut session, native_system) = session()?;
+        native_system.fs().write_files_all([
+            (SystemPathBuf::from("/chalk.yml"), ""),
+            (SystemPathBuf::from("/workspace/main.py"), ""),
+        ])?;
+
+        let main = SystemPath::new("/workspace/main.py");
+        let handle = open_python_document(&mut session, main)?;
+        let (routing_root, state) = session
+            .project_entry_for_path(main)
+            .context("the containing Chalk project must own the document")?;
+
+        assert_eq!(routing_root.as_path(), SystemPath::new("/"));
+        assert_eq!(state.kind(), ProjectKind::Chalk);
+        assert_eq!(
+            state.workspace_root.as_deref(),
+            Some(SystemPath::new("/workspace"))
+        );
+        assert!(has_open_file(state, main));
+        assert!(!has_open_file(
+            &session.projects[SystemPath::new("/workspace")],
+            main
+        ));
+        assert_eq!(source_paths(state), ["/workspace/main.py"]);
+        assert!(
+            session
+                .snapshot_document(handle.uri())?
+                .chalk_project()
+                .is_some()
+        );
+
+        let snapshot = session.snapshot_session();
+        let owners = snapshot
+            .routed_projects()
+            .iter()
+            .filter_map(|project| {
+                let file = system_path_to_file(project.db(), main).ok()?;
+                snapshot
+                    .project_owns_file(project, file)
+                    .then(|| project.routing_root())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(owners, [SystemPath::new("/")]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn containing_chalk_project_routes_unsaved_chalk_sql_source() -> anyhow::Result<()> {
+        let (mut session, native_system) = session()?;
+        native_system
+            .fs()
+            .write_files_all([(SystemPathBuf::from("/chalk.yml"), "")])?;
+
+        let sql = SystemPath::new("/workspace/features.chalk.sql");
+        open_document(&mut session, sql, "select 1", LanguageKind::new("sql"))?;
+        let (routing_root, state) = session
+            .project_entry_for_path(sql)
+            .context("the containing Chalk project must own the SQL source")?;
+
+        assert_eq!(routing_root.as_path(), SystemPath::new("/"));
+        assert_eq!(state.kind(), ProjectKind::Chalk);
+        assert_eq!(
+            state.workspace_root.as_deref(),
+            Some(SystemPath::new("/workspace"))
+        );
+        assert_eq!(source_paths(state), ["/workspace/features.chalk.sql"]);
+        assert!(!has_open_file(state, sql));
+
+        Ok(())
+    }
+
+    #[test]
+    fn lazy_chalk_projects_route_siblings_and_survive_marker_deletion() -> anyhow::Result<()> {
+        let (mut session, native_system) = session()?;
+        native_system.fs().write_files_all([
+            (SystemPathBuf::from("/workspace/parent.py"), ""),
+            (SystemPathBuf::from("/workspace/first/chalk.yaml"), "{}"),
+            (
+                SystemPathBuf::from("/workspace/first/unopened.py"),
+                "def invalid(:\n",
+            ),
+            (SystemPathBuf::from("/workspace/second/chalk.yml"), "{}"),
+        ])?;
+
+        let first_file = SystemPath::new("/workspace/first/src/first.py");
+        let second_file = SystemPath::new("/workspace/second/src/second.py");
+        open_python_document(&mut session, first_file)?;
+        open_python_document(&mut session, second_file)?;
+
+        assert_eq!(session.projects.len(), 3);
+        {
+            let snapshot = session.snapshot_session();
+            assert_eq!(snapshot.routed_projects().len(), 3);
+            assert_eq!(
+                snapshot
+                    .routed_projects()
+                    .iter()
+                    .map(|project| (project.routing_root(), project.kind()))
+                    .collect::<Vec<_>>(),
+                [
+                    (SystemPath::new("/workspace"), ProjectKind::Workspace),
+                    (SystemPath::new("/workspace/first"), ProjectKind::Chalk),
+                    (SystemPath::new("/workspace/second"), ProjectKind::Chalk),
+                ]
+            );
+            for (path, expected_root) in [
+                (
+                    SystemPath::new("/workspace/parent.py"),
+                    SystemPath::new("/workspace"),
+                ),
+                (first_file, SystemPath::new("/workspace/first")),
+                (second_file, SystemPath::new("/workspace/second")),
+            ] {
+                let owners: Vec<_> = snapshot
+                    .routed_projects()
+                    .iter()
+                    .filter_map(|project| {
+                        let file = ruff_db::files::system_path_to_file(project.db(), path).ok()?;
+                        snapshot
+                            .project_owns_file(project, file)
+                            .then(|| project.routing_root())
+                    })
+                    .collect();
+                assert_eq!(owners, [expected_root]);
+            }
+        }
+
+        for (file, expected_root) in [
+            (first_file, SystemPath::new("/workspace/first")),
+            (second_file, SystemPath::new("/workspace/second")),
+        ] {
+            let (routing_root, state) = session
+                .project_entry_for_path(file)
+                .context("opened file must have a project")?;
+            assert_eq!(routing_root.as_path(), expected_root);
+            assert_eq!(state.kind(), ProjectKind::Chalk);
+            assert_eq!(
+                state.workspace_root.as_deref(),
+                Some(SystemPath::new("/workspace"))
+            );
+            assert!(
+                state.db.check().is_empty(),
+                "the lazy project must preserve open-files check mode"
+            );
+        }
+
+        native_system
+            .fs()
+            .remove_file("/workspace/first/chalk.yaml")?;
+        let retained_file = SystemPath::new("/workspace/first/src/retained.py");
+        open_python_document(&mut session, retained_file)?;
+
+        assert_eq!(session.projects.len(), 3);
+        let (routing_root, state) = session
+            .project_entry_for_path(retained_file)
+            .context("retained file must have a project")?;
+        assert_eq!(routing_root.as_path(), SystemPath::new("/workspace/first"));
+        assert_eq!(state.kind(), ProjectKind::Chalk);
+
+        Ok(())
+    }
+
+    #[test]
+    fn lazy_chalk_project_migrates_existing_open_documents() -> anyhow::Result<()> {
+        let (mut session, native_system) = session()?;
+        let chalk_root = SystemPath::new("/workspace/project");
+        let existing_file = chalk_root.join("existing.py");
+        let triggering_file = chalk_root.join("trigger.py");
+        open_python_document(&mut session, &existing_file)?;
+        open_python_document(&mut session, &triggering_file)?;
+
+        let workspace_state = session
+            .projects
+            .get(SystemPath::new("/workspace"))
+            .context("workspace project must exist")?;
+        assert!(has_open_file(workspace_state, &existing_file));
+        assert!(has_open_file(workspace_state, &triggering_file));
+
+        native_system
+            .fs()
+            .write_files_all([(chalk_root.join("chalk.yaml"), "{}")])?;
+        open_python_document(&mut session, &triggering_file)?;
+
+        let workspace_state = session
+            .projects
+            .get(SystemPath::new("/workspace"))
+            .context("workspace project must remain")?;
+        assert!(!has_open_file(workspace_state, &existing_file));
+        assert!(!has_open_file(workspace_state, &triggering_file));
+
+        let chalk_state = session
+            .projects
+            .get(chalk_root)
+            .context("Chalk project must exist")?;
+        assert!(has_open_file(chalk_state, &existing_file));
+        assert!(has_open_file(chalk_state, &triggering_file));
+
+        Ok(())
+    }
+
+    #[test]
+    fn chalk_input_is_carried_and_refreshes_without_rerouting() -> anyhow::Result<()> {
+        let (mut session, native_system) = session()?;
+        native_system.fs().write_files_all([
+            (SystemPathBuf::from("/workspace/project/chalk.yml"), ""),
+            (SystemPathBuf::from("/workspace/project/main.py"), ""),
+        ])?;
+        let main = SystemPath::new("/workspace/project/main.py");
+        let handle = open_python_document(&mut session, main)?;
+
+        let state = session
+            .projects
+            .get(SystemPath::new("/workspace/project"))
+            .context("Chalk project must exist")?;
+        assert_eq!(source_paths(state), ["/workspace/project/main.py"]);
+
+        let document_snapshot = session.snapshot_document(handle.uri())?;
+        assert!(document_snapshot.chalk_project().is_some());
+
+        native_system
+            .fs()
+            .write_file("/workspace/project/added.chalk.sql", "")?;
+        session.apply_changes_to_all(&[ChangeEvent::Created {
+            path: SystemPathBuf::from("/workspace/project/added.chalk.sql"),
+            kind: CreatedKind::File,
+        }]);
+        assert_eq!(
+            source_paths(&session.projects[SystemPath::new("/workspace/project")]),
+            [
+                "/workspace/project/added.chalk.sql",
+                "/workspace/project/main.py"
+            ]
+        );
+
+        native_system
+            .fs()
+            .remove_file("/workspace/project/chalk.yml")?;
+        session.apply_changes_to_all(&[ChangeEvent::Deleted {
+            path: SystemPathBuf::from("/workspace/project/chalk.yml"),
+            kind: ty_project::watch::DeletedKind::File,
+        }]);
+        let state = &session.projects[SystemPath::new("/workspace/project")];
+        assert_eq!(state.kind(), ProjectKind::Chalk);
+        assert_eq!(
+            source_paths(state),
+            [
+                "/workspace/project/added.chalk.sql",
+                "/workspace/project/main.py"
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn editor_file_revisions_are_synchronized_to_every_project() -> anyhow::Result<()> {
+        let (mut session, native_system) = session()?;
+        native_system.fs().write_files_all([
+            (SystemPathBuf::from("/workspace/a/chalk.yml"), ""),
+            (SystemPathBuf::from("/workspace/a/main.py"), ""),
+            (SystemPathBuf::from("/workspace/b/chalk.yml"), ""),
+            (SystemPathBuf::from("/workspace/b/main.py"), ""),
+            (SystemPathBuf::from("/workspace/shared.py"), "on disk"),
+        ])?;
+        open_python_document(&mut session, SystemPath::new("/workspace/a/main.py"))?;
+        open_python_document(&mut session, SystemPath::new("/workspace/b/main.py"))?;
+
+        let shared = SystemPath::new("/workspace/shared.py");
+        let uri = Uri::from_file_path(shared.as_std_path())
+            .map_err(|()| anyhow!("document path must be a valid URI"))?;
+        let mut handle = session.open_text_document(TextDocument::new(
+            uri,
+            "in editor".to_string(),
+            1,
+            LanguageKind::Python,
+        ));
+
+        for state in session.projects.values() {
+            let file = ruff_db::files::system_path_to_file(&state.db, shared)?;
+            assert_eq!(source_text(&state.db, file).as_str(), "in editor");
+        }
+
+        handle.update_text_document(
+            &mut session,
+            vec![
+                TextDocumentContentChangeEvent::TextDocumentContentChangeWholeDocument(
+                    lsp_types::TextDocumentContentChangeWholeDocument {
+                        text: "edited".to_string(),
+                    },
+                ),
+            ],
+            2,
+        )?;
+        for state in session.projects.values() {
+            let file = ruff_db::files::system_path_to_file(&state.db, shared)?;
+            assert_eq!(source_text(&state.db, file).as_str(), "edited");
+        }
+
+        handle.close(&mut session)?;
+        for state in session.projects.values() {
+            let file = ruff_db::files::system_path_to_file(&state.db, shared)?;
+            assert_eq!(source_text(&state.db, file).as_str(), "on disk");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn unsaved_open_source_is_retained_until_close() -> anyhow::Result<()> {
+        let (mut session, native_system) = session()?;
+        native_system.fs().write_files_all([
+            (SystemPathBuf::from("/workspace/project/chalk.yml"), ""),
+            (SystemPathBuf::from("/workspace/project/resolver.py"), ""),
+        ])?;
+        open_python_document(
+            &mut session,
+            SystemPath::new("/workspace/project/resolver.py"),
+        )?;
+
+        let helper = SystemPath::new("/workspace/project/helper.py");
+        assert!(!native_system.path_exists(helper));
+        let uri = Uri::from_file_path(helper.as_std_path())
+            .map_err(|()| anyhow!("document path must be a valid URI"))?;
+        let mut handle = session.open_text_document(TextDocument::new(
+            uri,
+            "value = 1".to_string(),
+            1,
+            LanguageKind::Python,
+        ));
+
+        let state = &session.projects[SystemPath::new("/workspace/project")];
+        assert_eq!(
+            source_paths(state),
+            [
+                "/workspace/project/helper.py",
+                "/workspace/project/resolver.py"
+            ]
+        );
+        let file = ruff_db::files::system_path_to_file(&state.db, helper)?;
+        assert_eq!(source_text(&state.db, file).as_str(), "value = 1");
+
+        handle.update_text_document(
+            &mut session,
+            vec![
+                TextDocumentContentChangeEvent::TextDocumentContentChangeWholeDocument(
+                    lsp_types::TextDocumentContentChangeWholeDocument {
+                        text: "value = 2".to_string(),
+                    },
+                ),
+            ],
+            2,
+        )?;
+        let state = &session.projects[SystemPath::new("/workspace/project")];
+        let file = ruff_db::files::system_path_to_file(&state.db, helper)?;
+        assert_eq!(source_text(&state.db, file).as_str(), "value = 2");
+        assert_eq!(
+            source_paths(state),
+            [
+                "/workspace/project/helper.py",
+                "/workspace/project/resolver.py"
+            ]
+        );
+
+        handle.close(&mut session)?;
+        let state = &session.projects[SystemPath::new("/workspace/project")];
+        assert_eq!(source_paths(state), ["/workspace/project/resolver.py"]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn closing_unsaved_membership_inputs_restores_disk_source_set() -> anyhow::Result<()> {
+        let (mut session, native_system) = session()?;
+        native_system.fs().write_files_all([
+            (
+                SystemPathBuf::from("/workspace/project/chalk.yml"),
+                "chalkignore: .chalkignore\n",
+            ),
+            (SystemPathBuf::from("/workspace/project/.chalkignore"), ""),
+            (
+                SystemPathBuf::from("/workspace/project/alternate.ignore"),
+                "ignored.py\n",
+            ),
+            (SystemPathBuf::from("/workspace/project/ignored.py"), ""),
+            (SystemPathBuf::from("/workspace/project/main.py"), ""),
+        ])?;
+        open_python_document(&mut session, SystemPath::new("/workspace/project/main.py"))?;
+
+        let chalk_root = SystemPath::new("/workspace/project");
+        assert_eq!(
+            source_paths(&session.projects[chalk_root]),
+            [
+                "/workspace/project/ignored.py",
+                "/workspace/project/main.py"
+            ]
+        );
+
+        let local_ignore = open_document(
+            &mut session,
+            SystemPath::new("/workspace/project/.chalkignore"),
+            "ignored.py\n",
+            LanguageKind::new("text"),
+        )?;
+        assert_eq!(
+            source_paths(&session.projects[chalk_root]),
+            ["/workspace/project/main.py"]
+        );
+        local_ignore.close(&mut session)?;
+        assert_eq!(
+            source_paths(&session.projects[chalk_root]),
+            [
+                "/workspace/project/ignored.py",
+                "/workspace/project/main.py"
+            ]
+        );
+
+        let config = open_document(
+            &mut session,
+            SystemPath::new("/workspace/project/chalk.yml"),
+            "chalkignore: alternate.ignore\n",
+            LanguageKind::new("yaml"),
+        )?;
+        assert_eq!(
+            source_paths(&session.projects[chalk_root]),
+            ["/workspace/project/main.py"]
+        );
+        config.close(&mut session)?;
+        assert_eq!(
+            source_paths(&session.projects[chalk_root]),
+            [
+                "/workspace/project/ignored.py",
+                "/workspace/project/main.py"
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn closing_unsaved_external_ignore_restores_disk_source_set() -> anyhow::Result<()> {
+        let (mut session, native_system) = session()?;
+        native_system.fs().write_files_all([
+            (
+                SystemPathBuf::from("/workspace/project/chalk.yml"),
+                "chalkignore: /external/chalk.ignore\n",
+            ),
+            (SystemPathBuf::from("/external/chalk.ignore"), ""),
+            (SystemPathBuf::from("/workspace/project/ignored.py"), ""),
+            (SystemPathBuf::from("/workspace/project/main.py"), ""),
+        ])?;
+        open_python_document(&mut session, SystemPath::new("/workspace/project/main.py"))?;
+
+        let chalk_root = SystemPath::new("/workspace/project");
+        assert_eq!(
+            source_paths(&session.projects[chalk_root]),
+            [
+                "/workspace/project/ignored.py",
+                "/workspace/project/main.py"
+            ]
+        );
+
+        let ignore = open_document(
+            &mut session,
+            SystemPath::new("/external/chalk.ignore"),
+            "ignored.py\n",
+            LanguageKind::new("text"),
+        )?;
+        assert_eq!(
+            source_paths(&session.projects[chalk_root]),
+            ["/workspace/project/main.py"]
+        );
+        ignore.close(&mut session)?;
+        assert_eq!(
+            source_paths(&session.projects[chalk_root]),
+            [
+                "/workspace/project/ignored.py",
+                "/workspace/project/main.py"
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn chalk_sql_document_lazily_creates_project_without_opening_python_file() -> anyhow::Result<()>
+    {
+        let (mut session, native_system) = session()?;
+        native_system
+            .fs()
+            .write_files_all([(SystemPathBuf::from("/workspace/project/chalk.yml"), "")])?;
+        let sql = SystemPath::new("/workspace/project/features.chalk.sql");
+
+        open_document(&mut session, sql, "select 1", LanguageKind::new("sql"))?;
+
+        let state = session
+            .projects
+            .get(SystemPath::new("/workspace/project"))
+            .context("Chalk project must exist")?;
+        assert_eq!(
+            source_paths(state),
+            ["/workspace/project/features.chalk.sql"]
+        );
+        assert!(!has_open_file(state, sql));
+
+        Ok(())
+    }
+
+    #[test]
+    fn lazy_chalk_project_migrates_unsaved_chalk_sql_document() -> anyhow::Result<()> {
+        let (mut session, native_system) = session()?;
+        let chalk_root = SystemPath::new("/workspace/project");
+        let sql = chalk_root.join("features.chalk.sql");
+        open_document(&mut session, &sql, "select 1", LanguageKind::new("sql"))?;
+        assert!(!native_system.path_exists(&sql));
+
+        native_system.fs().write_files_all([
+            (chalk_root.join("chalk.yml"), ""),
+            (chalk_root.join("main.py"), ""),
+        ])?;
+        open_python_document(&mut session, &chalk_root.join("main.py"))?;
+
+        let state = session
+            .projects
+            .get(chalk_root)
+            .context("Chalk project must exist")?;
+        assert_eq!(
+            source_paths(state),
+            [
+                "/workspace/project/features.chalk.sql",
+                "/workspace/project/main.py"
+            ]
+        );
+        let sql_file = ruff_db::files::system_path_to_file(&state.db, &sql)?;
+        assert_eq!(source_text(&state.db, sql_file).as_str(), "select 1");
+        assert!(!has_open_file(state, &sql));
+
+        Ok(())
+    }
+
+    #[test]
+    fn chalk_fallback_applies_workspace_overrides() -> anyhow::Result<()> {
+        let (mut session, native_system) = session()?;
+        session
+            .workspaces
+            .workspaces
+            .get_mut(SystemPath::new("/workspace"))
+            .unwrap()
+            .initialize(WorkspaceSettings {
+                overrides: Some(ProjectOptionsOverrides {
+                    fallback_python_version: Some(RangedValue::new(
+                        SupportedPythonVersion::Py310,
+                        ValueSource::Editor,
+                    )),
+                    ..ProjectOptionsOverrides::default()
+                }),
+                ..WorkspaceSettings::default()
+            });
+        native_system.fs().write_files_all([
+            (SystemPathBuf::from("/workspace/project/chalk.yml"), ""),
+            (
+                SystemPathBuf::from("/workspace/project/ty.toml"),
+                "this is not = valid",
+            ),
+            (SystemPathBuf::from("/workspace/project/main.py"), ""),
+        ])?;
+
+        open_python_document(&mut session, SystemPath::new("/workspace/project/main.py"))?;
+        let state = session
+            .projects
+            .get(SystemPath::new("/workspace/project"))
+            .context("Chalk project must exist")?;
+        assert_eq!(state.db.python_version(), PythonVersion::PY310);
+
+        Ok(())
+    }
+}
