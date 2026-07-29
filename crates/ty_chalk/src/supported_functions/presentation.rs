@@ -549,3 +549,450 @@ fn format_supported_type_with_nullable(ty: &SupportedTy, nullable: bool) -> Stri
         display
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+
+    fn call(kind: CallKind, name: &str) -> SupportedCall {
+        SupportedCall {
+            kind,
+            name: name.to_owned(),
+        }
+    }
+
+    fn signature(args: Vec<SupportedArg>) -> SupportedSignature {
+        SupportedSignature {
+            args: args.into_boxed_slice(),
+        }
+    }
+
+    fn arg(ty: SupportedTy) -> SupportedArg {
+        SupportedArg {
+            ty,
+            argument_name: None,
+            has_default: false,
+        }
+    }
+
+    fn named_arg(ty: SupportedTy, name: &str, has_default: bool) -> SupportedArg {
+        SupportedArg {
+            ty,
+            argument_name: Some(name.to_owned()),
+            has_default,
+        }
+    }
+
+    fn supported(
+        entries: impl IntoIterator<Item = (SupportedCall, Vec<SupportedSignature>)>,
+    ) -> SupportedFuncs {
+        SupportedFuncs::from_impls(entries.into_iter().collect::<BTreeMap<_, _>>())
+    }
+
+    fn int() -> SupportedTy {
+        SupportedTy::Int { nullable: false }
+    }
+
+    fn none() -> SupportedTy {
+        SupportedTy::None { nullable: true }
+    }
+
+    #[test]
+    fn builtin_keeps_first_argument_and_method_omits_receiver() {
+        let len = call(CallKind::Builtin, "len");
+        let method = call(CallKind::Method, "method");
+        let supported = supported([
+            (len.clone(), vec![signature(vec![arg(int())])]),
+            (
+                method.clone(),
+                vec![signature(vec![
+                    arg(SupportedTy::Other {
+                        nullable: false,
+                        name: "Receiver".to_owned(),
+                    }),
+                    arg(int()),
+                ])],
+            ),
+        ]);
+
+        assert_eq!(
+            present_supported_signatures(&supported, &[method, len]),
+            ["len(int)", "method(int)"]
+        );
+    }
+
+    #[test]
+    fn method_receiver_is_projected_before_grouping_and_nullable_collapse() {
+        let method = call(CallKind::Method, "method");
+        let supported = supported([(
+            method.clone(),
+            vec![
+                signature(vec![
+                    named_arg(
+                        SupportedTy::Other {
+                            nullable: false,
+                            name: "FirstReceiver".to_owned(),
+                        },
+                        "first_self",
+                        false,
+                    ),
+                    named_arg(int(), "value", false),
+                ]),
+                signature(vec![
+                    named_arg(
+                        SupportedTy::Other {
+                            nullable: false,
+                            name: "SecondReceiver".to_owned(),
+                        },
+                        "second_self",
+                        true,
+                    ),
+                    named_arg(none(), "value", false),
+                ]),
+            ],
+        )]);
+
+        assert_eq!(
+            present_supported_signatures(&supported, &[method]),
+            ["method(value: int | None)"]
+        );
+    }
+
+    #[test]
+    fn preserves_argument_names_and_defaults() {
+        let pow = call(CallKind::Builtin, "pow");
+        let supported = supported([(
+            pow.clone(),
+            vec![signature(vec![
+                named_arg(int(), "base", false),
+                named_arg(int(), "exponent", true),
+            ])],
+        )]);
+
+        assert_eq!(
+            present_supported_signatures(&supported, &[pow]),
+            ["pow(base: int, exponent: int = ...)"]
+        );
+    }
+
+    #[test]
+    fn formats_every_supported_type_category_and_recursive_type() {
+        let types = [
+            SupportedTy::Any { nullable: false },
+            SupportedTy::Bool { nullable: false },
+            SupportedTy::Bytes { nullable: false },
+            SupportedTy::Class {
+                nullable: true,
+                module: "models".to_owned(),
+                name: "User".to_owned(),
+            },
+            SupportedTy::Counter {
+                nullable: false,
+                items: Box::new(int()),
+            },
+            SupportedTy::Date { nullable: false },
+            SupportedTy::DateTime { nullable: false },
+            SupportedTy::Dict {
+                nullable: false,
+                key_type: Box::new(SupportedTy::Str { nullable: false }),
+                value_type: Box::new(SupportedTy::List {
+                    nullable: false,
+                    items: Box::new(SupportedTy::Int { nullable: true }),
+                }),
+            },
+            SupportedTy::Float { nullable: false },
+            SupportedTy::FrozenSet {
+                nullable: false,
+                items: Box::new(SupportedTy::Str { nullable: false }),
+            },
+            SupportedTy::Generator {
+                nullable: false,
+                items: Box::new(SupportedTy::Bytes { nullable: false }),
+            },
+            SupportedTy::HashlibHash { nullable: false },
+            int(),
+            SupportedTy::Iterable {
+                nullable: false,
+                items: Box::new(SupportedTy::Any { nullable: false }),
+            },
+            SupportedTy::Json { nullable: false },
+            SupportedTy::List {
+                nullable: false,
+                items: Box::new(int()),
+            },
+            SupportedTy::Module {
+                nullable: false,
+                name: "math".to_owned(),
+            },
+            none(),
+            SupportedTy::ReMatch { nullable: false },
+            SupportedTy::RePattern { nullable: false },
+            SupportedTy::RequestsHttpResponse { nullable: false },
+            SupportedTy::Set {
+                nullable: false,
+                items: Box::new(int()),
+            },
+            SupportedTy::SequenceMatcher { nullable: false },
+            SupportedTy::Str { nullable: false },
+            SupportedTy::SubClassOf {
+                ty_name: "Proto".to_owned(),
+                match_nullable: true,
+            },
+            SupportedTy::Time { nullable: false },
+            SupportedTy::Timedelta { nullable: false },
+            SupportedTy::TimeZone { nullable: false },
+            SupportedTy::Tuple {
+                nullable: false,
+                items: vec![int(), SupportedTy::Str { nullable: false }],
+                is_variable: false,
+            },
+            SupportedTy::Tuple {
+                nullable: false,
+                items: vec![SupportedTy::Float { nullable: false }],
+                is_variable: true,
+            },
+            SupportedTy::Other {
+                nullable: true,
+                name: "Custom".to_owned(),
+            },
+        ];
+
+        assert_eq!(
+            types.iter().map(format_supported_type).collect::<Vec<_>>(),
+            [
+                "Any",
+                "bool",
+                "bytes",
+                "class[models.User] | None",
+                "Counter[int]",
+                "date",
+                "datetime",
+                "dict[str, list[int | None]]",
+                "float",
+                "frozenset[str]",
+                "Generator[bytes]",
+                "hashlib.Hash",
+                "int",
+                "Iterable[Any]",
+                "json",
+                "list[int]",
+                "module[math]",
+                "None",
+                "Match",
+                "Pattern",
+                "RequestsHttpResponse",
+                "set[int]",
+                "SequenceMatcher",
+                "str",
+                "subclass[Proto] | None",
+                "time",
+                "timedelta",
+                "timezone",
+                "tuple[int, str]",
+                "tuple[float, ...]",
+                "Custom | None",
+            ]
+        );
+    }
+
+    #[test]
+    fn deduplicates_and_orders_independently_of_call_and_signature_order() {
+        let alpha = call(CallKind::Builtin, "alpha");
+        let beta = call(CallKind::Builtin, "beta");
+        let forward_supported = supported([
+            (
+                alpha.clone(),
+                vec![
+                    signature(vec![arg(int())]),
+                    signature(vec![arg(SupportedTy::Str { nullable: false })]),
+                ],
+            ),
+            (
+                beta.clone(),
+                vec![signature(vec![arg(SupportedTy::Bool { nullable: false })])],
+            ),
+        ]);
+        let reverse_supported = supported([
+            (
+                alpha.clone(),
+                vec![
+                    signature(vec![arg(SupportedTy::Str { nullable: false })]),
+                    signature(vec![arg(int())]),
+                ],
+            ),
+            (
+                beta.clone(),
+                vec![signature(vec![arg(SupportedTy::Bool { nullable: false })])],
+            ),
+        ]);
+
+        let forward =
+            present_supported_signatures(&forward_supported, &[alpha.clone(), beta.clone()]);
+        let reverse =
+            present_supported_signatures(&reverse_supported, &[beta, alpha.clone(), alpha]);
+        assert_eq!(forward, ["alpha(int)", "alpha(str)", "... [1 more]"]);
+        assert_eq!(forward, reverse);
+    }
+
+    #[test]
+    fn applies_one_global_cap_and_ignores_missing_registry_calls() {
+        let alpha = call(CallKind::Builtin, "alpha");
+        let beta = call(CallKind::Builtin, "beta");
+        let gamma = call(CallKind::Builtin, "gamma");
+        let delta = call(CallKind::Builtin, "delta");
+        let missing = call(CallKind::Builtin, "missing");
+        let supported = supported([
+            (alpha.clone(), vec![signature(vec![arg(int())])]),
+            (beta.clone(), vec![signature(vec![arg(int())])]),
+            (gamma.clone(), vec![signature(vec![arg(int())])]),
+            (delta.clone(), vec![signature(vec![arg(int())])]),
+        ]);
+
+        assert_eq!(
+            present_supported_signatures(&supported, &[missing, gamma, beta, delta, alpha]),
+            ["alpha(int)", "beta(int)", "... [2 more]"]
+        );
+    }
+
+    #[test]
+    fn collapses_only_a_complete_top_level_nullable_cartesian_product() {
+        let function = call(CallKind::Builtin, "f");
+        let supported = supported([(
+            function.clone(),
+            vec![
+                signature(vec![
+                    named_arg(int(), "left", false),
+                    named_arg(int(), "right", true),
+                ]),
+                signature(vec![
+                    named_arg(int(), "left", false),
+                    named_arg(none(), "right", true),
+                ]),
+                signature(vec![
+                    named_arg(none(), "left", false),
+                    named_arg(int(), "right", true),
+                ]),
+                signature(vec![
+                    named_arg(none(), "left", false),
+                    named_arg(none(), "right", true),
+                ]),
+            ],
+        )]);
+
+        assert_eq!(
+            present_supported_signatures(&supported, &[function]),
+            ["f(left: int | None, right: int | None = ...)"]
+        );
+    }
+
+    #[test]
+    fn diagonal_and_incomplete_nullable_products_stay_separate() -> Result<(), BudgetExceeded> {
+        let diagonal = call(CallKind::Builtin, "diagonal");
+        let incomplete = call(CallKind::Builtin, "incomplete");
+        let diagonal_signatures = vec![
+            signature(vec![arg(int()), arg(int())]),
+            signature(vec![arg(none()), arg(none())]),
+        ];
+        let incomplete_signatures = vec![
+            signature(vec![arg(int()), arg(int())]),
+            signature(vec![arg(int()), arg(none())]),
+            signature(vec![arg(none()), arg(none())]),
+        ];
+
+        let mut budget = PresentationBudget::new();
+        assert_eq!(
+            displays_for_call(&diagonal, &diagonal_signatures, &mut budget)?
+                .into_iter()
+                .collect::<Vec<_>>(),
+            ["diagonal(None, None)", "diagonal(int, int)"]
+        );
+        assert_eq!(
+            displays_for_call(&incomplete, &incomplete_signatures, &mut budget)?
+                .into_iter()
+                .collect::<Vec<_>>(),
+            [
+                "incomplete(None, None)",
+                "incomplete(int, None)",
+                "incomplete(int, int)",
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn existing_nullable_diagonal_does_not_imply_the_missing_cross_product() {
+        let function = call(CallKind::Builtin, "f");
+        let supported = supported([(
+            function.clone(),
+            vec![
+                signature(vec![arg(SupportedTy::Int { nullable: true }), arg(int())]),
+                signature(vec![arg(int()), arg(SupportedTy::Int { nullable: true })]),
+            ],
+        )]);
+
+        assert_eq!(
+            present_supported_signatures(&supported, &[function]),
+            ["f(int | None, int)", "f(int, int | None)"]
+        );
+    }
+
+    #[test]
+    fn budget_exhaustion_falls_back_to_raw_signatures() {
+        let function = call(CallKind::Builtin, "f");
+        let nullable_args = (0..17)
+            .map(|_| arg(SupportedTy::Int { nullable: true }))
+            .collect();
+        let non_nullable_args = (0..17).map(|_| arg(int())).collect();
+        let supported = supported([(
+            function.clone(),
+            vec![signature(nullable_args), signature(non_nullable_args)],
+        )]);
+
+        let displays = present_supported_signatures(&supported, &[function]);
+        assert_eq!(displays.len(), 2);
+        assert!(displays[0].contains(" | None"));
+        assert!(!displays[1].contains(" | None"));
+    }
+
+    #[test]
+    fn does_not_collapse_different_metadata_non_null_or_nested_structures()
+    -> Result<(), BudgetExceeded> {
+        let function = call(CallKind::Builtin, "f");
+        let signatures = vec![
+            signature(vec![named_arg(int(), "value", false)]),
+            signature(vec![named_arg(none(), "other", false)]),
+            signature(vec![named_arg(none(), "value", true)]),
+            signature(vec![named_arg(
+                SupportedTy::Str { nullable: false },
+                "value",
+                false,
+            )]),
+            signature(vec![arg(SupportedTy::List {
+                nullable: false,
+                items: Box::new(int()),
+            })]),
+            signature(vec![arg(SupportedTy::List {
+                nullable: false,
+                items: Box::new(SupportedTy::Int { nullable: true }),
+            })]),
+        ];
+
+        let mut budget = PresentationBudget::new();
+        assert_eq!(
+            displays_for_call(&function, &signatures, &mut budget)?
+                .into_iter()
+                .collect::<Vec<_>>(),
+            [
+                "f(list[int | None])",
+                "f(list[int])",
+                "f(other: None)",
+                "f(value: None = ...)",
+                "f(value: int)",
+                "f(value: str)",
+            ]
+        );
+        Ok(())
+    }
+}
