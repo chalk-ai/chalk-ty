@@ -35,6 +35,7 @@ Program:
     <temp_dir>/src,
     <temp_dir>/,
     vendored://stdlib,
+    vendored://stubs,
   ]
 Settings: Settings {
     rules: <RULES>,
