@@ -13,6 +13,7 @@ use ruff_db::diagnostic::Diagnostic;
 use ruff_db::files::{File, Files};
 use ruff_db::system::System;
 use ruff_db::vendored::VendoredFileSystem;
+use rustc_hash::FxHashSet;
 use salsa::{Database, Event, Setter};
 use ty_module_resolver::SearchPaths;
 use ty_python_core::program::{
@@ -172,6 +173,36 @@ impl ProjectDatabase {
     /// [`set_check_mode`]: ProjectDatabase::set_check_mode
     pub fn check_with_reporter(&self, reporter: &mut dyn ProgressReporter) {
         self.project().check(self, reporter);
+    }
+
+    /// Reports project settings and indexing diagnostics without checking any files.
+    ///
+    /// This can be paired with [`Self::check_files_with_reporter`] when the caller needs to
+    /// control the exact files checked for this project.
+    pub fn report_project_diagnostics(&self, reporter: &mut dyn ProgressReporter) {
+        self.project().report_project_diagnostics(self, reporter);
+    }
+
+    /// Checks the explicitly supplied files using the given reporter.
+    ///
+    /// Duplicate files are checked only once. Unlike [`Self::check_with_reporter`], this does not
+    /// report project settings or indexing diagnostics.
+    pub fn check_files_with_reporter(
+        &self,
+        files: impl IntoIterator<Item = File>,
+        reporter: &mut dyn ProgressReporter,
+    ) {
+        let mut seen = FxHashSet::default();
+        let files: Vec<_> = files
+            .into_iter()
+            .filter(|file| seen.insert(*file))
+            .collect();
+        reporter.set_files(files.len());
+
+        let project_span = tracing::debug_span!("ProjectDatabase::check_files_with_reporter");
+        let _span = project_span.enter();
+        self.project()
+            .check_files(self, files, reporter, &project_span);
     }
 
     #[tracing::instrument(level = "debug", skip(self))]

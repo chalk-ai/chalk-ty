@@ -367,31 +367,61 @@ impl Project {
             name = self.name(db)
         );
 
+        let files = ProjectFiles::new(db, self);
+        reporter.set_files(files.len());
+
+        self.report_project_diagnostics_for_files(db, &files, reporter);
+
+        let check_start = ruff_db::Instant::now();
+
+        let files: Vec<_> = (&files).into_iter().collect();
+        self.check_files(db, files, reporter, &project_span);
+
+        tracing::debug!(
+            "Checking all files took {:.3}s",
+            check_start.elapsed().as_secs_f64(),
+        );
+    }
+
+    pub(crate) fn report_project_diagnostics(
+        self,
+        db: &ProjectDatabase,
+        reporter: &mut dyn ProgressReporter,
+    ) {
+        let files = ProjectFiles::new(db, self);
+        self.report_project_diagnostics_for_files(db, &files, reporter);
+    }
+
+    fn report_project_diagnostics_for_files(
+        self,
+        db: &ProjectDatabase,
+        files: &ProjectFiles,
+        reporter: &mut dyn ProgressReporter,
+    ) {
         let mut diagnostics: Vec<Diagnostic> = self
             .settings_diagnostics(db)
             .iter()
             .map(OptionDiagnostic::to_diagnostic)
             .collect();
-
-        let files = ProjectFiles::new(db, self);
-        reporter.set_files(files.len());
-
         diagnostics.extend_from_slice(files.diagnostics());
-
         reporter.report_diagnostics(db, diagnostics);
+    }
 
+    pub(crate) fn check_files(
+        self,
+        db: &ProjectDatabase,
+        files: Vec<File>,
+        reporter: &mut dyn ProgressReporter,
+        project_span: &tracing::Span,
+    ) {
         let open_files = self.open_files(db);
-        let check_start = ruff_db::Instant::now();
-
-        let files: Vec<_> = (&files).into_iter().collect();
-
         files
             .into_par_iter()
             .for_each_with_project_db(db, |db, file| {
                 db.unwind_if_revision_cancelled();
 
                 let check_file_span =
-                    tracing::debug_span!(parent: &project_span, "check_file", ?file);
+                    tracing::debug_span!(parent: project_span, "check_file", ?file);
                 let _entered = check_file_span.entered();
 
                 match check_file_impl(db, file) {
@@ -416,11 +446,6 @@ impl Project {
                     }
                 }
             });
-
-        tracing::debug!(
-            "Checking all files took {:.3}s",
-            check_start.elapsed().as_secs_f64(),
-        );
     }
 
     pub(crate) fn check_file(self, db: &dyn Db, file: File) -> Vec<Diagnostic> {
