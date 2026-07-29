@@ -2,6 +2,29 @@
 
 This repository contains both Ruff (a Python linter and formatter) and ty (a Python type checker). The crates follow a naming convention: `ruff_*` for Ruff-specific code and `ty_*` for ty-specific code. ty reuses several Ruff crates, including the Python parser (`ruff_python_parser`) and AST definitions (`ruff_python_ast`).
 
+## Chalk changes must remain easy to rebase
+
+This repository is actually a fork that implements Chalk-specific features on
+top of Ruff/ty. As such, it must remain straightforward to rebase onto newer
+upstream Ruff/ty versions. Treat rebaseability as a primary architectural
+requirement for every Chalk-specific change, not as optional cleanup.
+
+- Put substantive Chalk behavior in dedicated Chalk-only crates, files, or
+  module trees.
+- Keep edits to upstream-owned Ruff/ty files to the smallest possible,
+  stable integration seams. Prefer thin hooks that delegate immediately to
+  Chalk-owned code.
+- Minimize the number, size, and distribution of Chalk hunks in files likely
+  to change upstream. Do not embed Chalk-specific orchestration into central
+  upstream implementations merely because it is locally convenient.
+- When Chalk requires private ty internals, concentrate the necessary
+  implementation in one narrow, purpose-built semantic bridge and/or expose the
+  underlying behavior directly with appropriate visibility (do not create
+  pass-through functions that merely re-export or forward to identically shaped APIs).
+- Before considering a Chalk change complete, inspect its diff specifically
+  for future upstream merge conflicts and move implementation out of
+  upstream-owned files wherever practical.
+
 ## Code reviews
 
 When reviewing a branch or pull request, be deliberately nitpicky. Report not
