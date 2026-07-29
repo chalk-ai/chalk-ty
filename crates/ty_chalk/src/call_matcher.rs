@@ -331,6 +331,22 @@ impl<'db> Matcher<'db> {
         };
         let definition_range = Some(origin.definition_range());
 
+        // The accelerator handles list mutation directly in its call-expression evaluator rather
+        // than through the supported-function registry.
+        if origin.ownership_origin == ModuleOrigin::StandardLibrary
+            && origin.module.as_ref() == "builtins"
+            && origin.qualified_symbol.as_ref() == "list.append"
+        {
+            return ClassifiedCall::Blanket(CallMatchTarget {
+                identity,
+                kind: CallKind::Method,
+                name: Name::new(origin.symbol.as_str()),
+                display_label,
+                definition_range,
+                receiver_parameter: Some(0),
+            });
+        }
+
         if origin.ownership_origin == ModuleOrigin::ThirdParty
             && is_chalk_namespace(origin.module.as_ref())
         {
@@ -1165,6 +1181,27 @@ len(1)
                 name: "startswith".into(),
                 receiver_parameter: Some(0),
                 reason: CallNoMatchReason::SignatureMismatch,
+            }]
+        );
+    }
+
+    #[test]
+    fn list_append_uses_accelerator_intrinsic() {
+        let (db, file) = setup(
+            r#"
+values: list[int] = []
+values.append(1)
+"#,
+            &[],
+        );
+
+        assert_eq!(
+            summarize(call_matches(&db, file, 0)),
+            [MatchSummary::Match {
+                identity: IdentitySummary::Definition,
+                kind: CallKind::Method,
+                name: "append".into(),
+                receiver_parameter: Some(0),
             }]
         );
     }
