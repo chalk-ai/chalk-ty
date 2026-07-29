@@ -21,6 +21,10 @@ requirement for every Chalk-specific change, not as optional cleanup.
   implementation in one narrow, purpose-built semantic bridge and/or expose the
   underlying behavior directly with appropriate visibility (do not create
   pass-through functions that merely re-export or forward to identically shaped APIs).
+- Throughout this fork, including tests, prefer direct fields at the narrowest
+  required visibility over trivial getters, and relax underlying visibility
+  instead of adding one-line forwarding wrappers. Keep methods only when they
+  add behavior or a useful conversion.
 - Before considering a Chalk change complete, inspect its diff specifically
   for future upstream merge conflicts and move implementation out of
   upstream-owned files wherever practical.
