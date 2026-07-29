@@ -536,3 +536,758 @@ fn is_chalk_namespace(module: &str) -> bool {
                 .is_some_and(|suffix| suffix.starts_with('.'))
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use ruff_db::files::{File, system_path_to_file};
+    use ruff_db::parsed::parsed_module;
+    use ruff_db::system::{
+        DbWithTestSystem as _, DbWithWritableSystem as _, SystemPath, SystemPathBuf,
+    };
+    use ruff_python_ast as ast;
+    use ty_project::{ProjectMetadata, TestDb};
+    use ty_python_semantic::{HasType, SemanticModel};
+
+    use super::{
+        CallKind, CallMatch, CallMatchIdentity, CallNoMatchReason, KnownCallTarget,
+        ObservedArgument, ObservedCall, ObservedCallTarget, match_call_target,
+    };
+
+    #[derive(Debug, Eq, PartialEq)]
+    enum IdentitySummary {
+        Definition,
+        Known(KnownCallTarget),
+        ModuleSymbol { module: String, symbol: String },
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    enum MatchSummary {
+        Match {
+            identity: IdentitySummary,
+            kind: CallKind,
+            name: String,
+            receiver_parameter: Option<u32>,
+        },
+        NoMatch {
+            identity: IdentitySummary,
+            kind: CallKind,
+            name: String,
+            receiver_parameter: Option<u32>,
+            reason: CallNoMatchReason,
+        },
+        Inconclusive,
+    }
+
+    fn setup(main: &str, files: &[(&str, &str)]) -> (TestDb, File) {
+        setup_at("/main.py", main, files)
+    }
+
+    fn setup_at(main_path: &str, main: &str, files: &[(&str, &str)]) -> (TestDb, File) {
+        let project = ProjectMetadata::new("test", SystemPathBuf::from("/"));
+        let mut db = TestDb::new(project);
+        db.init_program().unwrap();
+
+        for (path, source) in files {
+            if let Some(parent) = SystemPath::new(path).parent() {
+                db.memory_file_system()
+                    .create_directory_all(parent)
+                    .unwrap();
+            }
+            db.write_file(SystemPath::new(path), source).unwrap();
+        }
+        if let Some(parent) = SystemPath::new(main_path).parent() {
+            db.memory_file_system()
+                .create_directory_all(parent)
+                .unwrap();
+        }
+        db.write_file(SystemPath::new(main_path), main).unwrap();
+        let file = system_path_to_file(&db, main_path).unwrap();
+        (db, file)
+    }
+
+    fn call_matches(db: &TestDb, file: File, call_index: usize) -> Vec<CallMatch<'_>> {
+        let parsed = parsed_module(db, file).load(db);
+        let call = parsed
+            .syntax()
+            .body
+            .iter()
+            .filter_map(ast::Stmt::as_expr_stmt)
+            .filter_map(|statement| statement.value.as_call_expr())
+            .nth(call_index)
+            .unwrap();
+        let model = SemanticModel::new(db, file);
+        let arguments = call
+            .arguments
+            .iter_source_order()
+            .map(|argument| match argument {
+                ast::ArgOrKeyword::Arg(argument) => {
+                    ObservedArgument::Positional(argument.inferred_type(&model).unwrap())
+                }
+                ast::ArgOrKeyword::Keyword(keyword) => ObservedArgument::Keyword {
+                    name: keyword.arg.as_ref().unwrap().id.as_str(),
+                    ty: keyword.value.inferred_type(&model).unwrap(),
+                },
+            })
+            .collect::<Vec<_>>();
+        let receiver = call
+            .func
+            .as_attribute_expr()
+            .and_then(|attribute| attribute.value.inferred_type(&model));
+        let targets = model.chalk_call_targets(call);
+        let module_provenance = model.chalk_call_module_provenance(call);
+        let mut matches = targets
+            .targets
+            .iter()
+            .map(|target| {
+                match_call_target(
+                    db,
+                    ObservedCall {
+                        target: ObservedCallTarget::Resolved(*target),
+                        arguments: &arguments,
+                        receiver,
+                    },
+                )
+            })
+            .chain(targets.known_targets.iter().map(|target| {
+                match_call_target(
+                    db,
+                    ObservedCall {
+                        target: ObservedCallTarget::Known(*target),
+                        arguments: &arguments,
+                        receiver,
+                    },
+                )
+            }))
+            .collect::<Vec<_>>();
+        matches.extend(module_provenance.iter().map(|provenance| {
+            match_call_target(
+                db,
+                ObservedCall {
+                    target: ObservedCallTarget::ModuleProvenance(provenance),
+                    arguments: &arguments,
+                    receiver,
+                },
+            )
+        }));
+        if targets.has_unresolved {
+            matches.push(match_call_target(
+                db,
+                ObservedCall {
+                    target: ObservedCallTarget::Deferred,
+                    arguments: &arguments,
+                    receiver,
+                },
+            ));
+        }
+        let mut unique = Vec::with_capacity(matches.len());
+        for result in matches {
+            if !unique.contains(&result) {
+                unique.push(result);
+            }
+        }
+        unique
+    }
+
+    fn has_match(matches: &[CallMatch<'_>], kind: CallKind, name: &str) -> bool {
+        matches.iter().any(|result| {
+            matches!(
+                result,
+                CallMatch::Match(target) if target.kind == kind && target.name.as_str() == name
+            )
+        })
+    }
+
+    fn has_no_match(
+        matches: &[CallMatch<'_>],
+        kind: CallKind,
+        name: &str,
+        reason: CallNoMatchReason,
+    ) -> bool {
+        matches.iter().any(|result| {
+            matches!(
+                result,
+                CallMatch::NoMatch {
+                    target,
+                    reason: actual_reason,
+                } if target.kind == kind
+                    && target.name.as_str() == name
+                    && *actual_reason == reason
+            )
+        })
+    }
+
+    #[test]
+    fn builtin_match_type_mismatch_and_missing_binding() {
+        let (db, file) = setup(
+            r#"
+abs(1)
+abs("x")
+abs()
+"#,
+            &[],
+        );
+
+        assert!(has_match(
+            &call_matches(&db, file, 0),
+            CallKind::Builtin,
+            "abs"
+        ));
+        for index in [1, 2] {
+            assert!(has_no_match(
+                &call_matches(&db, file, index),
+                CallKind::Builtin,
+                "abs",
+                CallNoMatchReason::SignatureMismatch,
+            ));
+        }
+    }
+
+    fn summarize(matches: Vec<CallMatch<'_>>) -> Vec<MatchSummary> {
+        fn identity(identity: CallMatchIdentity<'_>) -> IdentitySummary {
+            match identity {
+                CallMatchIdentity::Definition(_) => IdentitySummary::Definition,
+                CallMatchIdentity::Known(known) => IdentitySummary::Known(known),
+                CallMatchIdentity::ModuleSymbol { module, symbol } => {
+                    IdentitySummary::ModuleSymbol {
+                        module: module.into(),
+                        symbol: symbol.as_str().into(),
+                    }
+                }
+            }
+        }
+
+        matches
+            .into_iter()
+            .map(|result| match result {
+                CallMatch::Match(target) => MatchSummary::Match {
+                    identity: identity(target.identity),
+                    kind: target.kind,
+                    name: target.name.as_str().into(),
+                    receiver_parameter: target.receiver_parameter,
+                },
+                CallMatch::NoMatch { target, reason } => MatchSummary::NoMatch {
+                    identity: identity(target.identity),
+                    kind: target.kind,
+                    name: target.name.as_str().into(),
+                    receiver_parameter: target.receiver_parameter,
+                    reason,
+                },
+                CallMatch::Inconclusive => MatchSummary::Inconclusive,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn imported_alias_and_module_qualified_function_use_semantic_module_receiver() {
+        let (db, file) = setup(
+            r#"
+import math
+from math import sqrt as square_root
+
+square_root(4.0)
+math.sqrt(4.0)
+"#,
+            &[],
+        );
+
+        for index in 0..2 {
+            assert_eq!(
+                summarize(call_matches(&db, file, index)),
+                [MatchSummary::Match {
+                    identity: IdentitySummary::Definition,
+                    kind: CallKind::Method,
+                    name: "sqrt".into(),
+                    receiver_parameter: Some(0),
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn bound_static_and_class_method_receivers_are_concrete() {
+        let (db, file) = setup(
+            r#"
+import datetime
+
+class C:
+    def bound(self, value: int) -> int:
+        return value
+
+    @staticmethod
+    def static(value: int) -> int:
+        return value
+
+    @classmethod
+    def class_method(cls, value: int) -> int:
+        return value
+
+class DerivedDateTime(datetime.datetime): ...
+
+C().bound(1)
+C.static(1)
+C.class_method(1)
+datetime.datetime.now()
+DerivedDateTime.now()
+DerivedDateTime(2024, 1, 1).now()
+"#,
+            &[],
+        );
+
+        for (index, name) in ["bound", "static", "class_method"].into_iter().enumerate() {
+            assert_eq!(
+                summarize(call_matches(&db, file, index)),
+                [MatchSummary::NoMatch {
+                    identity: IdentitySummary::Definition,
+                    kind: CallKind::Method,
+                    name: name.into(),
+                    receiver_parameter: Some(0),
+                    reason: CallNoMatchReason::MissingRegistryEntry,
+                }]
+            );
+        }
+        for index in 3..6 {
+            assert_eq!(
+                summarize(call_matches(&db, file, index)),
+                [MatchSummary::Match {
+                    identity: IdentitySummary::Definition,
+                    kind: CallKind::Method,
+                    name: "now".into(),
+                    receiver_parameter: Some(0),
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn missing_external_entry_and_per_target_alternatives() {
+        let (db, file) = setup(
+            r#"
+from math import sqrt
+from external import unsupported
+
+unsupported(1.0)
+(sqrt if flag else unsupported)(4.0)
+"#,
+            &[(
+                "/external.py",
+                "def unsupported(value: float) -> float: ...\n",
+            )],
+        );
+
+        assert_eq!(
+            summarize(call_matches(&db, file, 0)),
+            [MatchSummary::NoMatch {
+                identity: IdentitySummary::Definition,
+                kind: CallKind::Method,
+                name: "unsupported".into(),
+                receiver_parameter: Some(0),
+                reason: CallNoMatchReason::MissingRegistryEntry,
+            }]
+        );
+
+        assert_eq!(
+            summarize(call_matches(&db, file, 1)),
+            [
+                MatchSummary::Match {
+                    identity: IdentitySummary::Definition,
+                    kind: CallKind::Method,
+                    name: "sqrt".into(),
+                    receiver_parameter: Some(0),
+                },
+                MatchSummary::NoMatch {
+                    identity: IdentitySummary::Definition,
+                    kind: CallKind::Method,
+                    name: "unsupported".into(),
+                    receiver_parameter: Some(0),
+                    reason: CallNoMatchReason::MissingRegistryEntry,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn named_defaults_and_binding_failures() {
+        let (db, file) = setup(
+            r#"
+round(number=1)
+round(number=1, ndigits=2)
+round(1, 2, 3)
+round(1, number=2)
+round(value=1)
+"#,
+            &[],
+        );
+
+        for index in 0..2 {
+            assert_eq!(
+                summarize(call_matches(&db, file, index)),
+                [MatchSummary::Match {
+                    identity: IdentitySummary::Definition,
+                    kind: CallKind::Builtin,
+                    name: "round".into(),
+                    receiver_parameter: None,
+                }]
+            );
+        }
+        for index in 2..5 {
+            assert_eq!(
+                summarize(call_matches(&db, file, index)),
+                [MatchSummary::NoMatch {
+                    identity: IdentitySummary::Definition,
+                    kind: CallKind::Builtin,
+                    name: "round".into(),
+                    receiver_parameter: None,
+                    reason: CallNoMatchReason::SignatureMismatch,
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn positional_after_keyword_is_a_binding_mismatch() {
+        let (db, file) = setup("round(1, 2)\n", &[]);
+        let parsed = parsed_module(&db, file).load(&db);
+        let call = parsed
+            .syntax()
+            .body
+            .first()
+            .and_then(ast::Stmt::as_expr_stmt)
+            .and_then(|statement| statement.value.as_call_expr())
+            .unwrap();
+        let model = SemanticModel::new(&db, file);
+        let types = call
+            .arguments
+            .args
+            .iter()
+            .map(|argument| argument.inferred_type(&model).unwrap())
+            .collect::<Vec<_>>();
+        let target = model.chalk_call_targets(call).targets[0];
+
+        let result = match_call_target(
+            &db,
+            ObservedCall {
+                target: ObservedCallTarget::Resolved(target),
+                arguments: &[
+                    ObservedArgument::Keyword {
+                        name: "number",
+                        ty: types[0],
+                    },
+                    ObservedArgument::Positional(types[1]),
+                ],
+                receiver: None,
+            },
+        );
+        assert!(matches!(
+            result,
+            CallMatch::NoMatch {
+                reason: CallNoMatchReason::SignatureMismatch,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn bool_and_len_retain_source_call_identity_while_matching_protocol_methods() {
+        let (db, file) = setup(
+            r#"
+bool("value")
+bool(object())
+bool()
+len("value")
+len(1)
+"#,
+            &[],
+        );
+
+        assert!(has_match(
+            &call_matches(&db, file, 0),
+            CallKind::Builtin,
+            "bool"
+        ));
+        for index in [1, 2] {
+            assert!(has_no_match(
+                &call_matches(&db, file, index),
+                CallKind::Builtin,
+                "bool",
+                CallNoMatchReason::SignatureMismatch,
+            ));
+        }
+        assert!(has_match(
+            &call_matches(&db, file, 3),
+            CallKind::Builtin,
+            "len"
+        ));
+        assert!(has_no_match(
+            &call_matches(&db, file, 4),
+            CallKind::Builtin,
+            "len",
+            CallNoMatchReason::SignatureMismatch,
+        ));
+    }
+
+    #[test]
+    fn known_startswith_uses_ordinary_method_registry_path() {
+        let (db, file) = setup(
+            r#"
+"abc".startswith("a")
+"abc".startswith(1)
+"#,
+            &[],
+        );
+
+        assert_eq!(
+            summarize(call_matches(&db, file, 0)),
+            [MatchSummary::Match {
+                identity: IdentitySummary::Known(KnownCallTarget::StrStartswith),
+                kind: CallKind::Method,
+                name: "startswith".into(),
+                receiver_parameter: Some(0),
+            }]
+        );
+        assert_eq!(
+            summarize(call_matches(&db, file, 1)),
+            [MatchSummary::NoMatch {
+                identity: IdentitySummary::Known(KnownCallTarget::StrStartswith),
+                kind: CallKind::Method,
+                name: "startswith".into(),
+                receiver_parameter: Some(0),
+                reason: CallNoMatchReason::SignatureMismatch,
+            }]
+        );
+    }
+
+    #[test]
+    fn targets_retain_deterministic_labels_and_definition_locations() {
+        let (db, file) = setup(
+            r#"
+import datetime
+from chalk.functions import if_then_else, missing
+from math import sqrt
+
+sqrt(4.0)
+bool("value")
+len("value")
+"abc".startswith("a")
+datetime.datetime.now()
+if_then_else(True, 1, 0)
+missing()
+"#,
+            &[],
+        );
+
+        for (index, label, has_definition_range) in [
+            (0, "math.sqrt", true),
+            (1, "builtins.bool", true),
+            (2, "builtins.len", true),
+            (3, "str.startswith", false),
+            (4, "datetime.datetime.now", true),
+            (5, "chalk.functions.if_then_else", true),
+            (6, "chalk.functions.missing", false),
+        ] {
+            let matches = call_matches(&db, file, index);
+            let target = matches
+                .iter()
+                .find_map(|result| match result {
+                    CallMatch::Match(target) | CallMatch::NoMatch { target, .. } => Some(target),
+                    CallMatch::Inconclusive => None,
+                })
+                .unwrap();
+            assert_eq!(target.display_label.as_ref(), label, "call {index}");
+            assert_eq!(
+                target.definition_range.is_some(),
+                has_definition_range,
+                "call {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn first_party_chalk_packages_do_not_gain_blanket_support_from_their_name() {
+        let (db, file) = setup_at(
+            "/chalk/__init__.py",
+            r#"
+def custom(value): ...
+
+class Model:
+    def custom_method(self, value): ...
+
+custom(object())
+Model().custom_method(object())
+Model()
+"#,
+            &[],
+        );
+
+        for (index, name) in ["custom", "custom_method"].into_iter().enumerate() {
+            assert_eq!(
+                summarize(call_matches(&db, file, index)),
+                [MatchSummary::NoMatch {
+                    identity: IdentitySummary::Definition,
+                    kind: CallKind::Method,
+                    name: name.into(),
+                    receiver_parameter: Some(0),
+                    reason: CallNoMatchReason::MissingRegistryEntry,
+                }]
+            );
+        }
+        assert_eq!(
+            summarize(call_matches(&db, file, 2)),
+            [MatchSummary::Inconclusive]
+        );
+    }
+
+    #[test]
+    fn first_party_shadow_modules_do_not_claim_stdlib_or_chalk_registry_ownership() {
+        let (math_db, math_file) = setup_at(
+            "/math.py",
+            r#"
+def sqrt(value: float) -> float: ...
+sqrt(4.0)
+"#,
+            &[],
+        );
+        assert_eq!(
+            summarize(call_matches(&math_db, math_file, 0)),
+            [MatchSummary::NoMatch {
+                identity: IdentitySummary::Definition,
+                kind: CallKind::Method,
+                name: "sqrt".into(),
+                receiver_parameter: Some(0),
+                reason: CallNoMatchReason::MissingRegistryEntry,
+            }]
+        );
+
+        let (chalk_db, chalk_file) = setup_at(
+            "/chalk.py",
+            "def custom(value): ...\ncustom(object())\n",
+            &[],
+        );
+        assert_eq!(
+            summarize(call_matches(&chalk_db, chalk_file, 0)),
+            [MatchSummary::NoMatch {
+                identity: IdentitySummary::Definition,
+                kind: CallKind::Method,
+                name: "custom".into(),
+                receiver_parameter: Some(0),
+                reason: CallNoMatchReason::MissingRegistryEntry,
+            }]
+        );
+    }
+
+    #[test]
+    fn local_runtime_shadow_does_not_match_through_vendored_stdlib_stub() {
+        let (db, file) = setup(
+            "import datetime\n\ndatetime.datetime.now()\n",
+            &[(
+                "/datetime.py",
+                "class datetime:\n    @classmethod\n    def now(cls): ...\n",
+            )],
+        );
+
+        assert_eq!(
+            summarize(call_matches(&db, file, 0)),
+            [MatchSummary::NoMatch {
+                identity: IdentitySummary::Definition,
+                kind: CallKind::Method,
+                name: "now".into(),
+                receiver_parameter: Some(0),
+                reason: CallNoMatchReason::MissingRegistryEntry,
+            }]
+        );
+    }
+
+    #[test]
+    fn constructors_require_registered_builtins_and_defer_general_classes() {
+        let (db, file) = setup(
+            r#"
+from builtins import int as Integer
+from external import External
+
+class Outer:
+    class Inner: ...
+
+int("1")
+Integer("1")
+dict()
+External()
+Outer.Inner()
+"#,
+            &[("/external.py", "class External: ...\n")],
+        );
+
+        for index in 0..2 {
+            assert_eq!(
+                summarize(call_matches(&db, file, index)),
+                [MatchSummary::Match {
+                    identity: IdentitySummary::Definition,
+                    kind: CallKind::Builtin,
+                    name: "int".into(),
+                    receiver_parameter: None,
+                }]
+            );
+        }
+        assert_eq!(
+            summarize(call_matches(&db, file, 2)),
+            [MatchSummary::NoMatch {
+                identity: IdentitySummary::Definition,
+                kind: CallKind::Builtin,
+                name: "dict".into(),
+                receiver_parameter: None,
+                reason: CallNoMatchReason::MissingRegistryEntry,
+            }]
+        );
+        for index in 3..5 {
+            assert_eq!(
+                summarize(call_matches(&db, file, index)),
+                [MatchSummary::Inconclusive]
+            );
+        }
+    }
+
+    #[test]
+    fn bound_method_alias_without_a_receiver_is_inconclusive() {
+        let (db, file) = setup(
+            r#"
+import datetime
+
+now = datetime.datetime.now
+now()
+"#,
+            &[],
+        );
+
+        assert_eq!(
+            summarize(call_matches(&db, file, 0)),
+            [MatchSummary::Inconclusive]
+        );
+    }
+
+    #[test]
+    fn dynamic_targets_and_unknown_components_are_inconclusive() {
+        let (db, file) = setup(
+            r#"
+from typing import Any
+
+def unresolved(value: Any):
+    return value
+
+unresolved(1)(2)
+
+value: Any
+len(value)
+"#,
+            &[],
+        );
+
+        assert!(
+            call_matches(&db, file, 0)
+                .iter()
+                .any(|result| result == &CallMatch::Inconclusive)
+        );
+        assert!(
+            call_matches(&db, file, 1)
+                .iter()
+                .any(|result| result == &CallMatch::Inconclusive)
+        );
+    }
+}
