@@ -7,10 +7,6 @@ use ty_project::{Db, parallel::ParallelIteratorExt};
 /// Get all workspace symbols matching the query string.
 /// Returns symbols from all files in the workspace, filtered by the query.
 pub fn workspace_symbols(db: &dyn Db, query: &str) -> Vec<WorkspaceSymbolInfo> {
-    if query.is_empty() {
-        return Vec::new();
-    }
-
     workspace_symbols_for_files(db, query, db.project().files(db).iter().copied())
 }
 

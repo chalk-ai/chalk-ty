@@ -1920,6 +1920,8 @@ impl SessionSnapshot {
     pub(crate) fn project_owns_file(&self, project: &RoutedProject, file: File) -> bool {
         let path = file.path(project.db());
         let Some(path) = path.as_system_path() else {
+            // Current callers only route indexed system files. Virtual and notebook files have no
+            // filesystem hierarchy from which to select a more specific project.
             return true;
         };
 
