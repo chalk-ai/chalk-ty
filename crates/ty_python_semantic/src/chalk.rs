@@ -34,6 +34,7 @@ pub enum ChalkTypeShape<'db> {
     Intersection(ChalkIntersection<'db>),
     Concrete,
 }
+
 /// Native components of an intersection, together with ty's materialized bounds.
 #[derive(Debug)]
 pub struct ChalkIntersection<'db> {
@@ -994,5 +995,376 @@ fn module_attribute_provenance(
             true
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ruff_db::Db as _;
+    use ruff_db::files::{File, system_path_to_file};
+    use ruff_db::parsed::parsed_module;
+    use ruff_db::system::{
+        DbWithTestSystem as _, DbWithWritableSystem as _, SystemPath, SystemPathBuf,
+    };
+    use ruff_python_ast::{self as ast, PythonVersion};
+    use ruff_text_size::{Ranged, TextRange, TextSize};
+    use ty_module_resolver::{ModuleName, SearchPathSettings, resolve_module};
+    use ty_python_core::platform::PythonPlatform;
+    use ty_python_core::program::{FallibleStrategy, Program, ProgramSettings};
+    use ty_site_packages::{PythonVersionSource, PythonVersionWithSource};
+
+    use crate::db::tests::TestDb;
+    use crate::{HasType, SemanticModel};
+
+    use super::{
+        ChalkClassRelation, ModuleOrigin, chalk_receiver_module_relation, module_origin,
+        module_ownership_origin,
+    };
+
+    fn setup(
+        main: &str,
+        source_files: &[(&str, &str)],
+        site_package_files: &[(&str, &str)],
+        extra_files: &[(&str, &str)],
+    ) -> (TestDb, File) {
+        let mut db = TestDb::new();
+        for root in ["/src", "/site-packages", "/extra"] {
+            db.memory_file_system()
+                .create_directory_all(SystemPath::new(root))
+                .unwrap();
+        }
+        for (path, source) in source_files
+            .iter()
+            .chain(site_package_files)
+            .chain(extra_files)
+        {
+            if let Some(parent) = SystemPath::new(path).parent() {
+                db.memory_file_system()
+                    .create_directory_all(parent)
+                    .unwrap();
+            }
+            db.write_file(SystemPath::new(path), source).unwrap();
+        }
+        db.write_file(SystemPath::new("/src/main.py"), main)
+            .unwrap();
+
+        let search_paths = SearchPathSettings {
+            extra_paths: vec![SystemPathBuf::from("/extra")],
+            src_roots: vec![SystemPathBuf::from("/src")],
+            custom_typeshed: None,
+            site_packages_paths: vec![SystemPathBuf::from("/site-packages")],
+            real_stdlib_path: None,
+        }
+        .to_search_paths(db.system(), db.vendored(), &FallibleStrategy)
+        .unwrap();
+        Program::from_settings(
+            &db,
+            ProgramSettings {
+                python_version: PythonVersionWithSource {
+                    version: PythonVersion::latest_ty(),
+                    source: PythonVersionSource::Default,
+                },
+                python_platform: PythonPlatform::default(),
+                search_paths,
+            },
+        );
+
+        let file = system_path_to_file(&db, "/src/main.py").unwrap();
+        (db, file)
+    }
+
+    fn call(db: &TestDb, file: File, index: usize) -> ast::ExprCall {
+        let parsed = parsed_module(db, file).load(db);
+        parsed
+            .syntax()
+            .body
+            .iter()
+            .filter_map(ast::Stmt::as_expr_stmt)
+            .filter_map(|statement| statement.value.as_call_expr())
+            .nth(index)
+            .cloned()
+            .unwrap()
+    }
+
+    #[test]
+    fn module_origins_preserve_search_path_identity() {
+        let (db, file) = setup(
+            "",
+            &[("/src/math.py", ""), ("/src/project_mod.py", "")],
+            &[
+                ("/site-packages/chalkdf/__init__.pyi", ""),
+                ("/site-packages/namespace_pkg/member.pyi", ""),
+            ],
+            &[("/extra/extra_mod.py", "")],
+        );
+
+        for (name, expected) in [
+            ("datetime", ModuleOrigin::StandardLibrary),
+            ("chalkdf", ModuleOrigin::ThirdParty),
+            ("math", ModuleOrigin::StandardLibrary),
+            ("project_mod", ModuleOrigin::FirstParty),
+            ("extra_mod", ModuleOrigin::Extra),
+            ("namespace_pkg", ModuleOrigin::Namespace),
+            ("missing", ModuleOrigin::Unresolved),
+        ] {
+            let name = ModuleName::new(name).unwrap();
+            assert_eq!(
+                module_origin(&db, resolve_module(&db, file, &name)),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn module_ownership_prefers_runtime_modules_and_preserves_vendored_fallbacks() {
+        let (db, file) = setup(
+            "",
+            &[("/src/chalk/__init__.py", ""), ("/src/local_stub.pyi", "")],
+            &[
+                ("/site-packages/chalkdf/__init__.py", ""),
+                ("/site-packages/namespace_pkg/member.py", ""),
+            ],
+            &[("/extra/extra_mod.py", "")],
+        );
+
+        let chalk = ModuleName::new_static("chalk").unwrap();
+        let typing_chalk = resolve_module(&db, file, &chalk);
+        assert_eq!(module_origin(&db, typing_chalk), ModuleOrigin::ThirdParty);
+        assert_eq!(
+            module_ownership_origin(&db, file, &chalk, typing_chalk),
+            ModuleOrigin::FirstParty
+        );
+
+        for (name, expected) in [
+            ("chalkdf", ModuleOrigin::ThirdParty),
+            ("extra_mod", ModuleOrigin::Extra),
+            ("namespace_pkg", ModuleOrigin::Namespace),
+            ("datetime", ModuleOrigin::StandardLibrary),
+            ("local_stub", ModuleOrigin::Unresolved),
+            ("missing", ModuleOrigin::Unresolved),
+        ] {
+            let name = ModuleName::new(name).unwrap();
+            let typing_module = resolve_module(&db, file, &name);
+            assert_eq!(
+                module_ownership_origin(&db, file, &name, typing_module),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn call_definition_origins_include_qualified_symbols_and_exact_ranges() {
+        const ORIGINS: &str = "def top(): ...\nclass Type:\n    def method(self): ...\n\ndef outer():\n    def inner(): ...\n    inner()\n";
+        let (db, file) = setup(
+            "from origins import Type, top\ntop()\nType().method()\n",
+            &[("/src/origins.py", ORIGINS)],
+            &[],
+            &[],
+        );
+        let model = SemanticModel::new(&db, file);
+        let origin_file = system_path_to_file(&db, "/src/origins.py").unwrap();
+
+        for (index, qualified_symbol, range) in [
+            (0, "top", TextRange::new(TextSize::new(4), TextSize::new(7))),
+            (
+                1,
+                "Type.method",
+                TextRange::new(TextSize::new(35), TextSize::new(41)),
+            ),
+        ] {
+            let target = model.chalk_call_targets(&call(&db, file, index)).targets[0];
+            let origin = super::chalk_call_definition_origin(&db, target.definition).unwrap();
+            assert_eq!(origin.module_name(), "origins");
+            assert_eq!(origin.qualified_symbol(), qualified_symbol);
+            assert_eq!(origin.definition_range().file(), origin_file);
+            assert_eq!(origin.definition_range().range(), range);
+        }
+
+        let parsed = parsed_module(&db, origin_file).load(&db);
+        let outer = parsed
+            .syntax()
+            .body
+            .iter()
+            .filter_map(ast::Stmt::as_function_def_stmt)
+            .find(|function| function.name.as_str() == "outer")
+            .unwrap();
+        let inner_call = outer
+            .body
+            .iter()
+            .filter_map(ast::Stmt::as_expr_stmt)
+            .find_map(|statement| statement.value.as_call_expr())
+            .unwrap();
+        let origin_model = SemanticModel::new(&db, origin_file);
+        let target = origin_model.chalk_call_targets(inner_call).targets[0];
+        let origin = super::chalk_call_definition_origin(&db, target.definition).unwrap();
+        assert_eq!(origin.qualified_symbol(), "outer.<locals>.inner");
+        assert_eq!(
+            origin.definition_range().range(),
+            TextRange::new(TextSize::new(75), TextSize::new(80))
+        );
+    }
+
+    #[test]
+    fn call_module_provenance_is_an_installed_chalk_fallback_only() {
+        let (db, file) = setup(
+            r#"
+from chalk import DataFrame
+from chalk.functions import if_then_else as alias
+from chalk.functions import missing as direct_missing
+from external import missing as external_missing
+import chalk.functions as chalk_functions
+
+alias(True, 1, 0)
+chalk_functions.if_then_else(True, 1, 0)
+direct_missing()
+chalk_functions.missing()
+DataFrame.missing()
+external_missing()
+"#,
+            &[("/src/external.py", "")],
+            &[],
+            &[],
+        );
+        let model = SemanticModel::new(&db, file);
+
+        for index in 0..2 {
+            assert!(
+                model
+                    .chalk_call_module_provenance(&call(&db, file, index))
+                    .is_empty()
+            );
+        }
+        for (index, module, receiver_parameter) in [
+            (2, "chalk.functions", None),
+            (3, "chalk.functions", None),
+            (4, "chalkdf.dataframe", Some(0)),
+        ] {
+            let provenance = model.chalk_call_module_provenance(&call(&db, file, index));
+            let [provenance] = provenance.as_ref() else {
+                panic!("call {index}: expected one provenance result, got {provenance:#?}");
+            };
+            assert_eq!(provenance.module_name(), module);
+            assert_eq!(provenance.symbol_name(), "missing");
+            assert_eq!(provenance.origin(), ModuleOrigin::ThirdParty);
+            assert_eq!(provenance.ownership_origin(), ModuleOrigin::ThirdParty);
+            assert_eq!(provenance.receiver_parameter(), receiver_parameter);
+        }
+        assert!(
+            model
+                .chalk_call_module_provenance(&call(&db, file, 5))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn call_module_provenance_uses_runtime_ownership_for_typing_overlays() {
+        let (db, file) = setup(
+            r#"
+from chalk.dynamic import missing as direct
+import chalk.dynamic as module
+
+direct()
+module.missing()
+"#,
+            &[],
+            &[
+                ("/site-packages/chalk/__init__.py", ""),
+                ("/site-packages/chalk/dynamic.py", ""),
+            ],
+            &[
+                ("/extra/chalk-stubs/__init__.pyi", ""),
+                ("/extra/chalk-stubs/dynamic.pyi", ""),
+            ],
+        );
+        let model = SemanticModel::new(&db, file);
+
+        for index in 0..2 {
+            let provenance = model.chalk_call_module_provenance(&call(&db, file, index));
+            let [provenance] = provenance.as_ref() else {
+                panic!("call {index}: expected one provenance result, got {provenance:#?}");
+            };
+            assert_eq!(provenance.module_name(), "chalk.dynamic");
+            assert_eq!(provenance.origin(), ModuleOrigin::Extra);
+            assert_eq!(provenance.ownership_origin(), ModuleOrigin::ThirdParty);
+        }
+    }
+
+    #[test]
+    fn receiver_relation_preserves_qualified_owners_inheritance_and_uncertainty() {
+        let (db, file) = setup(
+            r#"
+from local import Token as LocalToken
+from pkg import Derived, Outer, Token
+from typing import Any, TypeVar
+
+dynamic_cls: type[Any]
+sink(Token(), Derived(), Token, Derived, Outer.Token, dynamic_cls, LocalToken)
+
+T = TypeVar("T", bound=Token)
+def capture(cls: type[T]):
+    sink(cls)
+"#,
+            &[("/src/local.py", "class Token: ...\n")],
+            &[(
+                "/site-packages/pkg/__init__.py",
+                "class Token: ...\nclass Derived(Token): ...\nclass Outer:\n    class Token: ...\n",
+            )],
+            &[],
+        );
+        let model = SemanticModel::new(&db, file);
+        let sink = call(&db, file, 0);
+        let types = sink
+            .arguments
+            .args
+            .iter()
+            .map(|argument| argument.inferred_type(&model).unwrap())
+            .collect::<Vec<_>>();
+
+        for index in 0..4 {
+            assert_eq!(
+                chalk_receiver_module_relation(&db, types[index], "pkg.Token"),
+                ChalkClassRelation::Match,
+                "argument {index}"
+            );
+        }
+        assert_eq!(
+            chalk_receiver_module_relation(&db, types[4], "pkg.Token"),
+            ChalkClassRelation::NoMatch
+        );
+        assert_eq!(
+            chalk_receiver_module_relation(&db, types[4], "pkg.Outer.Token"),
+            ChalkClassRelation::Match
+        );
+        assert_eq!(
+            chalk_receiver_module_relation(&db, types[5], "pkg.Token"),
+            ChalkClassRelation::Unavailable
+        );
+        assert_eq!(
+            chalk_receiver_module_relation(&db, types[6], "local.Token"),
+            ChalkClassRelation::NoMatch
+        );
+
+        let parsed = parsed_module(&db, file).load(&db);
+        let capture = parsed
+            .syntax()
+            .body
+            .iter()
+            .find_map(ast::Stmt::as_function_def_stmt)
+            .unwrap();
+        let typevar_sink = capture
+            .body
+            .iter()
+            .find_map(ast::Stmt::as_expr_stmt)
+            .and_then(|statement| statement.value.as_call_expr())
+            .unwrap();
+        let typevar = typevar_sink.arguments.args[0]
+            .inferred_type(&model)
+            .unwrap();
+        assert_eq!(
+            chalk_receiver_module_relation(&db, typevar, "pkg.Token"),
+            ChalkClassRelation::Unavailable
+        );
     }
 }
