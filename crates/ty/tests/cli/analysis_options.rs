@@ -48,13 +48,13 @@ fn overrides_basic() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.analysis]
+            [tool.chalk.analysis]
             respect-type-ignore-comments = true
 
-            [[tool.ty.overrides]]
+            [[tool.chalk.overrides]]
             include = ["tests/**"]
 
-            [tool.ty.overrides.analysis]
+            [tool.chalk.overrides.analysis]
             respect-type-ignore-comments = false
             "#,
         ),
@@ -98,19 +98,19 @@ fn overrides_precedence() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.analysis]
+            [tool.chalk.analysis]
             respect-type-ignore-comments = true
 
             # First override: all test files
-            [[tool.ty.overrides]]
+            [[tool.chalk.overrides]]
             include = ["tests/**"]
-            [tool.ty.overrides.analysis]
+            [tool.chalk.overrides.analysis]
             respect-type-ignore-comments = false
 
             # Second override: specific test file (takes precedence)
-            [[tool.ty.overrides]]
+            [[tool.chalk.overrides]]
             include = ["tests/important.py"]
-            [tool.ty.overrides.analysis]
+            [tool.chalk.overrides.analysis]
             respect-type-ignore-comments = true
             "#,
         ),
@@ -154,16 +154,16 @@ fn overrides_inherit_global() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.analysis]
+            [tool.chalk.analysis]
             respect-type-ignore-comments = false
 
-            [[tool.ty.overrides]]
+            [[tool.chalk.overrides]]
             include = ["tests/**"]
 
-            [tool.ty.overrides.rules]
+            [tool.chalk.overrides.rules]
             division-by-zero = "warn"
 
-            [tool.ty.overrides.analysis]
+            [tool.chalk.overrides.analysis]
             "#,
         ),
         (

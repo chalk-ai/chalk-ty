@@ -233,7 +233,7 @@ impl WorkspaceOptions {
                 Err(error) => {
                     client.show_error_message(format_args!(
                         "Failed to expand the environment variables \
-                                for the `ty.configuration_file` setting: {error}"
+                                for the `chalk.configurationFile` setting: {error}"
                     ));
                     None
                 }
@@ -249,7 +249,7 @@ impl WorkspaceOptions {
                     Ok(options) => Some(options),
                     Err(error) => {
                         client.show_error_message(format_args!(
-                            "Invalid `ty.configuration` options: {error}"
+                            "Invalid `chalk.configuration` options: {error}"
                         ));
                         None
                     }

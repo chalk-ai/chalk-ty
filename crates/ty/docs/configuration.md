@@ -26,7 +26,7 @@ Set `terminal.error-on-warning` to `false` to exit with code 0 if all diagnostic
 === "pyproject.toml"
 
     ```toml
-    [tool.ty.rules]
+    [tool.chalk.rules]
     possibly-unresolved-reference = "warn"
     division-by-zero = "ignore"
     ```
@@ -68,7 +68,7 @@ any module where the first component contains the substring `test`, use `*test*.
 === "pyproject.toml"
 
     ```toml
-    [tool.ty.analysis]
+    [tool.chalk.analysis]
     # Suppress errors for all `test` modules except `test.foo`
     allowed-unresolved-imports = ["test.**", "!test.foo"]
     ```
@@ -109,7 +109,7 @@ When multiple patterns match, later entries take precedence.
 === "pyproject.toml"
 
     ```toml
-    [tool.ty.analysis]
+    [tool.chalk.analysis]
     # Replace all pandas and numpy imports with Any
     replace-imports-with-any = ["pandas.**", "numpy.**"]
     ```
@@ -145,7 +145,7 @@ Defaults to `true`.
 === "pyproject.toml"
 
     ```toml
-    [tool.ty.analysis]
+    [tool.chalk.analysis]
     # Disable support for `type: ignore` comments
     respect-type-ignore-comments = false
     ```
@@ -182,7 +182,7 @@ configuration setting.
 === "pyproject.toml"
 
     ```toml
-    [tool.ty.environment]
+    [tool.chalk.environment]
     extra-paths = ["./shared/my-search-path"]
     ```
 
@@ -226,7 +226,7 @@ or `python` binary available in `PATH`.
 === "pyproject.toml"
 
     ```toml
-    [tool.ty.environment]
+    [tool.chalk.environment]
     python = "./custom-venv-location/.venv"
     ```
 
@@ -262,7 +262,7 @@ If no platform is specified, ty will use the current platform:
 === "pyproject.toml"
 
     ```toml
-    [tool.ty.environment]
+    [tool.chalk.environment]
     # Tailor type stubs and conditionalized type definitions to windows.
     python-platform = "win32"
     ```
@@ -310,7 +310,7 @@ to reflect the differing contents of the standard library across Python versions
 === "pyproject.toml"
 
     ```toml
-    [tool.ty.environment]
+    [tool.chalk.environment]
     python-version = "3.12"
     ```
 
@@ -346,7 +346,7 @@ if they exist and are not packages (i.e. they do not contain `__init__.py` or `_
 === "pyproject.toml"
 
     ```toml
-    [tool.ty.environment]
+    [tool.chalk.environment]
     # Multiple directories (priority order)
     root = ["./src", "./lib", "./vendor"]
     ```
@@ -376,7 +376,7 @@ bundled as a zip file in the binary
 === "pyproject.toml"
 
     ```toml
-    [tool.ty.environment]
+    [tool.chalk.environment]
     typeshed = "/path/to/custom/typeshed"
     ```
 
@@ -401,21 +401,21 @@ rules for matching files.
 For example, to relax enforcement of rules in test files:
 
 ```toml
-[[tool.ty.overrides]]
+[[tool.chalk.overrides]]
 include = ["tests/**", "**/test_*.py"]
 
-[tool.ty.overrides.rules]
+[tool.chalk.overrides.rules]
 possibly-unresolved-reference = "warn"
 ```
 
 Or, to ignore a rule in generated files but retain enforcement in an important file:
 
 ```toml
-[[tool.ty.overrides]]
+[[tool.chalk.overrides]]
 include = ["generated/**"]
 exclude = ["generated/important.py"]
 
-[tool.ty.overrides.rules]
+[tool.chalk.overrides.rules]
 possibly-unresolved-reference = "ignore"
 ```
 
@@ -438,7 +438,7 @@ If not specified, defaults to `[]` (excludes no files).
 === "pyproject.toml"
 
     ```toml
-    [[tool.ty.overrides]]
+    [[tool.chalk.overrides]]
     exclude = [
         "generated",
         "*.proto",
@@ -480,7 +480,7 @@ If not specified, defaults to `["**"]` (matches all files).
 === "pyproject.toml"
 
     ```toml
-    [[tool.ty.overrides]]
+    [[tool.chalk.overrides]]
     include = [
         "src",
         "tests",
@@ -516,10 +516,10 @@ severity levels or disable them entirely.
 === "pyproject.toml"
 
     ```toml
-    [[tool.ty.overrides]]
+    [[tool.chalk.overrides]]
     include = ["src"]
 
-    [tool.ty.overrides.rules]
+    [tool.chalk.overrides.rules]
     possibly-unresolved-reference = "ignore"
     ```
 
@@ -562,7 +562,7 @@ any module where the first component contains the substring `test`, use `*test*.
 === "pyproject.toml"
 
     ```toml
-    [tool.ty.overrides.analysis]
+    [tool.chalk.overrides.analysis]
     # Suppress errors for all `test` modules except `test.foo`
     allowed-unresolved-imports = ["test.**", "!test.foo"]
     ```
@@ -603,7 +603,7 @@ When multiple patterns match, later entries take precedence.
 === "pyproject.toml"
 
     ```toml
-    [tool.ty.overrides.analysis]
+    [tool.chalk.overrides.analysis]
     # Replace all pandas and numpy imports with Any
     replace-imports-with-any = ["pandas.**", "numpy.**"]
     ```
@@ -639,7 +639,7 @@ Defaults to `true`.
 === "pyproject.toml"
 
     ```toml
-    [tool.ty.overrides.analysis]
+    [tool.chalk.overrides.analysis]
     # Disable support for `type: ignore` comments
     respect-type-ignore-comments = false
     ```
@@ -713,7 +713,7 @@ to re-include `dist` use `exclude = ["!dist"]`
 === "pyproject.toml"
 
     ```toml
-    [tool.ty.src]
+    [tool.chalk.src]
     exclude = [
         "generated",
         "*.proto",
@@ -768,7 +768,7 @@ matches `<project_root>/src` and not `<project_root>/test/src`).
 === "pyproject.toml"
 
     ```toml
-    [tool.ty.src]
+    [tool.chalk.src]
     include = [
         "src",
         "tests",
@@ -802,7 +802,7 @@ Enabled by default.
 === "pyproject.toml"
 
     ```toml
-    [tool.ty.src]
+    [tool.chalk.src]
     respect-ignore-files = false
     ```
 
@@ -839,7 +839,7 @@ if they exist and are not packages (i.e. they do not contain `__init__.py` or `_
 === "pyproject.toml"
 
     ```toml
-    [tool.ty.src]
+    [tool.chalk.src]
     root = "./app"
     ```
 
@@ -869,7 +869,7 @@ Defaults to `true`.
 === "pyproject.toml"
 
     ```toml
-    [tool.ty.terminal]
+    [tool.chalk.terminal]
     # Exit with code 0 if all diagnostics had `warning` severity.
     error-on-warning = false
     ```
@@ -899,7 +899,7 @@ Defaults to `full`.
 === "pyproject.toml"
 
     ```toml
-    [tool.ty.terminal]
+    [tool.chalk.terminal]
     output-format = "concise"
     ```
 

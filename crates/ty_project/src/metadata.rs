@@ -85,7 +85,10 @@ impl ProjectMetadata {
         root: SystemPathBuf,
     ) -> Result<Self, ResolveRequiresPythonError> {
         Self::from_options(
-            pyproject.tool.and_then(|tool| tool.ty).unwrap_or_default(),
+            pyproject
+                .tool
+                .and_then(|tool| tool.chalk)
+                .unwrap_or_default(),
             root,
             pyproject.project.as_ref(),
             &FallibleStrategy,
@@ -139,7 +142,7 @@ impl ProjectMetadata {
     /// The algorithm traverses upwards in the `path`'s ancestor chain and uses the following precedence
     /// the resolve the project's root.
     ///
-    /// 1. The closest `pyproject.toml` with a `tool.ty` section or `ty.toml`.
+    /// 1. The closest `pyproject.toml` with a `tool.chalk` section or `ty.toml`.
     /// 1. The closest `pyproject.toml`.
     /// 1. Fallback to use `path` as the root and use the default settings.
     pub fn discover(
@@ -192,11 +195,11 @@ impl ProjectMetadata {
 
                 if pyproject
                     .as_ref()
-                    .is_some_and(|project| project.ty().is_some())
+                    .is_some_and(|project| project.chalk().is_some())
                 {
                     // TODO: Consider using a diagnostic here
                     tracing::warn!(
-                        "Ignoring the `tool.ty` section in `{pyproject_path}` because `{ty_toml_path}` takes precedence."
+                        "Ignoring the `tool.chalk` section in `{pyproject_path}` because `{ty_toml_path}` takes precedence."
                     );
                 }
 
@@ -221,7 +224,7 @@ impl ProjectMetadata {
             }
 
             if let Some(pyproject) = pyproject {
-                let has_ty_section = pyproject.ty().is_some();
+                let has_chalk_section = pyproject.chalk().is_some();
                 let metadata =
                     ProjectMetadata::from_pyproject(pyproject, project_root.to_path_buf())
                         .map_err(
@@ -231,7 +234,7 @@ impl ProjectMetadata {
                             },
                         )?;
 
-                if has_ty_section {
+                if has_chalk_section {
                     tracing::debug!("Found project at '{}'", project_root);
 
                     return Ok(metadata);
@@ -247,7 +250,7 @@ impl ProjectMetadata {
         // No project found, but maybe a pyproject.toml was found.
         let metadata = if let Some(closest_project) = closest_project {
             tracing::debug!(
-                "Project without `tool.ty` section: '{}'",
+                "Project without `tool.chalk` section: '{}'",
                 closest_project.root()
             );
 
@@ -486,7 +489,7 @@ mod tests {
                     [project]
                     name = "backend"
 
-                    [tool.ty
+                    [tool.chalk
                     "#,
                 ),
                 (root.join("db/__init__.py"), ""),
@@ -501,10 +504,10 @@ mod tests {
 
         assert_error_chain_eq(
             error,
-            r#"/app/pyproject.toml is not a valid `pyproject.toml`: TOML parse error at line 5, column 29
+            r#"/app/pyproject.toml is not a valid `pyproject.toml`: TOML parse error at line 5, column 32
   |
-5 |                     [tool.ty
-  |                             ^
+5 |                     [tool.chalk
+  |                                ^
 unclosed table, expected `]`
 "#,
         );
@@ -526,7 +529,7 @@ unclosed table, expected `]`
                     [project]
                     name = "project-root"
 
-                    [tool.ty.src]
+                    [tool.chalk.src]
                     root = "src"
                     "#,
                 ),
@@ -536,7 +539,7 @@ unclosed table, expected `]`
                     [project]
                     name = "nested-project"
 
-                    [tool.ty.src]
+                    [tool.chalk.src]
                     root = "src"
                     "#,
                 ),
@@ -576,7 +579,7 @@ unclosed table, expected `]`
                     [project]
                     name = "project-root"
 
-                    [tool.ty.src]
+                    [tool.chalk.src]
                     root = "src"
                     "#,
                 ),
@@ -586,7 +589,7 @@ unclosed table, expected `]`
                     [project]
                     name = "nested-project"
 
-                    [tool.ty.src]
+                    [tool.chalk.src]
                     root = "src"
                     "#,
                 ),
@@ -613,7 +616,7 @@ unclosed table, expected `]`
     }
 
     #[test]
-    fn nested_projects_without_ty_sections() -> anyhow::Result<()> {
+    fn nested_projects_without_chalk_sections() -> anyhow::Result<()> {
         let system = TestSystem::default();
         let root = SystemPathBuf::from("/app");
 
@@ -653,7 +656,7 @@ unclosed table, expected `]`
     }
 
     #[test]
-    fn nested_projects_with_outer_ty_section() -> anyhow::Result<()> {
+    fn nested_projects_with_outer_chalk_section() -> anyhow::Result<()> {
         let system = TestSystem::default();
         let root = SystemPathBuf::from("/app");
 
@@ -666,7 +669,7 @@ unclosed table, expected `]`
                     [project]
                     name = "project-root"
 
-                    [tool.ty.environment]
+                    [tool.chalk.environment]
                     python-version = "3.10"
                     "#,
                 ),
@@ -718,7 +721,7 @@ unclosed table, expected `]`
                     name = "super-app"
                     requires-python = ">=3.12"
 
-                    [tool.ty.src]
+                    [tool.chalk.src]
                     root = "this_option_is_ignored"
                     "#,
                 ),
@@ -931,7 +934,7 @@ unclosed table, expected `]`
                 [project]
                 requires-python = ">=3.12"
 
-                [tool.ty.environment]
+                [tool.chalk.environment]
                 python-version = "3.10"
                 "#,
             )

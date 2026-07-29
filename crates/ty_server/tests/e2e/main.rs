@@ -748,7 +748,7 @@ impl TestServer {
                 // > If the client can't provide a configuration setting for a given scope
                 // > then null needs to be present in the returned array.
                 match item.section.as_deref() {
-                    Some("ty") => match serde_json::to_value(options) {
+                    Some("chalk") => match serde_json::to_value(options) {
                         Ok(value) => value,
                         Err(err) => {
                             panic!("Failed to deserialize workspace configuration options: {err}")

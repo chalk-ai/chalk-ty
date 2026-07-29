@@ -192,7 +192,9 @@ impl TestCase {
             self.project_path("pyproject.toml").as_std_path(),
             toml::to_string(&PyProject {
                 project: None,
-                tool: Some(Tool { ty: Some(options) }),
+                tool: Some(Tool {
+                    chalk: Some(options),
+                }),
             })
             .context("Failed to serialize options")?,
         )
@@ -420,7 +422,9 @@ where
             project_path.join("pyproject.toml").as_std_path(),
             toml::to_string(&PyProject {
                 project: None,
-                tool: Some(Tool { ty: Some(options) }),
+                tool: Some(Tool {
+                    chalk: Some(options),
+                }),
             })
             .context("Failed to serialize options")?,
         )
@@ -1967,7 +1971,7 @@ fn active_project_config_change_reloads_project() -> anyhow::Result<()> {
     std::fs::write(
         case.project_path("pyproject.toml").as_std_path(),
         r#"
-        [tool.ty.rules]
+        [tool.chalk.rules]
         division-by-zero = "warn"
         "#,
     )?;
@@ -1990,7 +1994,7 @@ fn nested_project_config_change_is_cheap_if_active_project_unchanged() -> anyhow
     let project_root = case.db().project().root(case.db()).to_path_buf();
     let nested_pyproject = case.project_path("pkg/pyproject.toml");
 
-    std::fs::write(nested_pyproject.as_std_path(), "[tool.ty]\n")?;
+    std::fs::write(nested_pyproject.as_std_path(), "[tool.chalk]\n")?;
 
     let changes = case.stop_watch(event_for_file("pyproject.toml"));
     let result = case.apply_changes(&changes, None);
@@ -2010,7 +2014,7 @@ fn nested_projects_delete_root() -> anyhow::Result<()> {
             [project]
             name = "inner"
 
-            [tool.ty]
+            [tool.chalk]
             "#,
         )?;
 
@@ -2020,7 +2024,7 @@ fn nested_projects_delete_root() -> anyhow::Result<()> {
             [project]
             name = "outer"
 
-            [tool.ty]
+            [tool.chalk]
             "#,
         )?;
 

@@ -852,7 +852,7 @@ impl Session {
             .iter()
             .map(|uri| lsp_types::ConfigurationItem {
                 scope_uri: Some(uri.clone()),
-                section: Some("ty".to_string()),
+                section: Some("chalk".to_string()),
             })
             .collect();
 

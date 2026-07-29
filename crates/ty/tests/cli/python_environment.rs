@@ -11,7 +11,7 @@ fn config_override_python_version() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.environment]
+            [tool.chalk.environment]
             python-version = "3.11"
             "#,
         ),
@@ -68,7 +68,7 @@ fn config_override_python_platform() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.environment]
+            [tool.chalk.environment]
             python-platform = "linux"
             "#,
         ),
@@ -124,7 +124,7 @@ fn config_file_annotation_showing_where_python_version_set_typing_error() -> any
         (
             "pyproject.toml",
             r#"
-            [tool.ty.environment]
+            [tool.chalk.environment]
             python-version = "3.12"
             "#,
         ),
@@ -408,7 +408,8 @@ import colorama
     info: Searched in the following paths during module resolution:
     info:   1. <temp_dir>/project (first-party code)
     info:   2. vendored://stdlib (stdlib typeshed stubs vendored by ty)
-    info:   3. <temp_dir>/opt/homebrew/lib/python3.13/site-packages (site-packages)
+    info:   3. vendored://stubs (third-party stubs vendored by ty)
+    info:   4. <temp_dir>/opt/homebrew/lib/python3.13/site-packages (site-packages)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     error[unresolved-import]: Cannot resolve imported module `colorama`
@@ -420,7 +421,8 @@ import colorama
     info: Searched in the following paths during module resolution:
     info:   1. <temp_dir>/project (first-party code)
     info:   2. vendored://stdlib (stdlib typeshed stubs vendored by ty)
-    info:   3. <temp_dir>/opt/homebrew/lib/python3.13/site-packages (site-packages)
+    info:   3. vendored://stubs (third-party stubs vendored by ty)
+    info:   4. <temp_dir>/opt/homebrew/lib/python3.13/site-packages (site-packages)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     Found 2 diagnostics
@@ -443,7 +445,8 @@ import colorama
     info: Searched in the following paths during module resolution:
     info:   1. <temp_dir>/project (first-party code)
     info:   2. vendored://stdlib (stdlib typeshed stubs vendored by ty)
-    info:   3. <temp_dir>/opt/homebrew/Cellar/python@3.13/3.13.5/lib/python3.13/site-packages (site-packages)
+    info:   3. vendored://stubs (third-party stubs vendored by ty)
+    info:   4. <temp_dir>/opt/homebrew/Cellar/python@3.13/3.13.5/lib/python3.13/site-packages (site-packages)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     error[unresolved-import]: Cannot resolve imported module `colorama`
@@ -455,7 +458,8 @@ import colorama
     info: Searched in the following paths during module resolution:
     info:   1. <temp_dir>/project (first-party code)
     info:   2. vendored://stdlib (stdlib typeshed stubs vendored by ty)
-    info:   3. <temp_dir>/opt/homebrew/Cellar/python@3.13/3.13.5/lib/python3.13/site-packages (site-packages)
+    info:   3. vendored://stubs (third-party stubs vendored by ty)
+    info:   4. <temp_dir>/opt/homebrew/Cellar/python@3.13/3.13.5/lib/python3.13/site-packages (site-packages)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     Found 2 diagnostics
@@ -478,7 +482,8 @@ import colorama
     info: Searched in the following paths during module resolution:
     info:   1. <temp_dir>/project (first-party code)
     info:   2. vendored://stdlib (stdlib typeshed stubs vendored by ty)
-    info:   3. <temp_dir>/opt/homebrew/Cellar/python@3.13/3.13.5/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (site-packages)
+    info:   3. vendored://stubs (third-party stubs vendored by ty)
+    info:   4. <temp_dir>/opt/homebrew/Cellar/python@3.13/3.13.5/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (site-packages)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     error[unresolved-import]: Cannot resolve imported module `colorama`
@@ -490,7 +495,8 @@ import colorama
     info: Searched in the following paths during module resolution:
     info:   1. <temp_dir>/project (first-party code)
     info:   2. vendored://stdlib (stdlib typeshed stubs vendored by ty)
-    info:   3. <temp_dir>/opt/homebrew/Cellar/python@3.13/3.13.5/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (site-packages)
+    info:   3. vendored://stubs (third-party stubs vendored by ty)
+    info:   4. <temp_dir>/opt/homebrew/Cellar/python@3.13/3.13.5/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (site-packages)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     Found 2 diagnostics
@@ -513,7 +519,8 @@ import colorama
     info: Searched in the following paths during module resolution:
     info:   1. <temp_dir>/project (first-party code)
     info:   2. vendored://stdlib (stdlib typeshed stubs vendored by ty)
-    info:   3. <temp_dir>/opt/homebrew/Cellar/python@3.13/3.13.5/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (site-packages)
+    info:   3. vendored://stubs (third-party stubs vendored by ty)
+    info:   4. <temp_dir>/opt/homebrew/Cellar/python@3.13/3.13.5/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (site-packages)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     error[unresolved-import]: Cannot resolve imported module `colorama`
@@ -525,7 +532,8 @@ import colorama
     info: Searched in the following paths during module resolution:
     info:   1. <temp_dir>/project (first-party code)
     info:   2. vendored://stdlib (stdlib typeshed stubs vendored by ty)
-    info:   3. <temp_dir>/opt/homebrew/Cellar/python@3.13/3.13.5/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (site-packages)
+    info:   3. vendored://stubs (third-party stubs vendored by ty)
+    info:   4. <temp_dir>/opt/homebrew/Cellar/python@3.13/3.13.5/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (site-packages)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     Found 2 diagnostics
@@ -579,7 +587,8 @@ import bar",
     info: Searched in the following paths during module resolution:
     info:   1. <temp_dir>/ (first-party code)
     info:   2. vendored://stdlib (stdlib typeshed stubs vendored by ty)
-    info:   3. <temp_dir>/strange-venv-location/lib/python3.13/site-packages (site-packages)
+    info:   3. vendored://stubs (third-party stubs vendored by ty)
+    info:   4. <temp_dir>/strange-venv-location/lib/python3.13/site-packages (site-packages)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     Found 1 diagnostic
@@ -626,8 +635,9 @@ fn lib64_site_packages_directory_on_unix() -> anyhow::Result<()> {
     info: Searched in the following paths during module resolution:
     info:   1. <temp_dir>/ (first-party code)
     info:   2. vendored://stdlib (stdlib typeshed stubs vendored by ty)
-    info:   3. <temp_dir>/.venv/lib/python3.13/site-packages (site-packages)
-    info:   4. <temp_dir>/.venv/lib64/python3.13/site-packages (site-packages)
+    info:   3. vendored://stubs (third-party stubs vendored by ty)
+    info:   4. <temp_dir>/.venv/lib/python3.13/site-packages (site-packages)
+    info:   5. <temp_dir>/.venv/lib64/python3.13/site-packages (site-packages)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     Found 1 diagnostic
@@ -673,7 +683,7 @@ fn many_search_paths() -> anyhow::Result<()> {
     info:   3. <temp_dir>/extra3 (extra search path specified on the CLI or in your config file)
     info:   4. <temp_dir>/extra4 (extra search path specified on the CLI or in your config file)
     info:   5. <temp_dir>/ (first-party code)
-    info:   6. vendored://stdlib (stdlib typeshed stubs vendored by ty)
+    info:   ... and 2 more paths. Run with `-v` to see all paths.
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     Found 1 diagnostic
@@ -706,7 +716,7 @@ fn many_search_paths() -> anyhow::Result<()> {
     info:   3. <temp_dir>/extra3 (extra search path specified on the CLI or in your config file)
     info:   4. <temp_dir>/extra4 (extra search path specified on the CLI or in your config file)
     info:   5. <temp_dir>/extra5 (extra search path specified on the CLI or in your config file)
-    info:   ... and 3 more paths. Run with `-v` to see all paths.
+    info:   ... and 4 more paths. Run with `-v` to see all paths.
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     Found 1 diagnostic
@@ -744,6 +754,7 @@ fn many_search_paths() -> anyhow::Result<()> {
     info:   6. <temp_dir>/extra6 (extra search path specified on the CLI or in your config file)
     info:   7. <temp_dir>/ (first-party code)
     info:   8. vendored://stdlib (stdlib typeshed stubs vendored by ty)
+    info:   9. vendored://stubs (third-party stubs vendored by ty)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
     info: rule `unresolved-import` is enabled by default
 
@@ -761,7 +772,7 @@ fn pyvenv_cfg_file_annotation_showing_where_python_version_set() -> anyhow::Resu
         (
             "pyproject.toml",
             r#"
-            [tool.ty.environment]
+            [tool.chalk.environment]
             python = "venv"
             "#,
         ),
@@ -818,7 +829,7 @@ fn pyvenv_cfg_file_annotation_no_trailing_newline() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.environment]
+            [tool.chalk.environment]
             python = "venv"
             "#,
         ),
@@ -1060,7 +1071,7 @@ fn config_file_broken_python_setting() -> anyhow::Result<()> {
             requires-python = ">=3.13"
             dependencies = []
 
-            [tool.ty.environment]
+            [tool.chalk.environment]
             python = "not-a-directory-or-executable"
             "#,
         ),
@@ -1079,7 +1090,7 @@ fn config_file_broken_python_setting() -> anyhow::Result<()> {
     --> Invalid setting in configuration file `<temp_dir>/pyproject.toml`
        |
      9 |
-    10 | [tool.ty.environment]
+    10 | [tool.chalk.environment]
     11 | python = "not-a-directory-or-executable"
        |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ does not point to a Python executable or a directory on disk
        |
@@ -1096,7 +1107,7 @@ fn config_file_unsupported_python_version() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.environment]
+            [tool.chalk.environment]
             python-version = "2.7"
             "#,
         ),
@@ -1148,7 +1159,7 @@ fn config_file_python_setting_directory_with_no_site_packages() -> anyhow::Resul
         (
             "pyproject.toml",
             r#"
-            [tool.ty.environment]
+            [tool.chalk.environment]
             python = "directory-but-no-site-packages"
             "#,
         ),
@@ -1169,7 +1180,7 @@ fn config_file_python_setting_directory_with_no_site_packages() -> anyhow::Resul
     --> Invalid setting in configuration file `<temp_dir>/pyproject.toml`
       |
     1 |
-    2 | [tool.ty.environment]
+    2 | [tool.chalk.environment]
     3 | python = "directory-but-no-site-packages"
       |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Could not find a `site-packages` directory for this Python installation/executable
       |
@@ -1184,7 +1195,7 @@ fn config_file_python_setting_directory_with_unsupported_python_version() -> any
         (
             "pyproject.toml",
             r#"
-            [tool.ty.environment]
+            [tool.chalk.environment]
             python = "venv"
             "#,
         ),
@@ -1238,7 +1249,7 @@ fn unix_system_installation_with_no_lib_directory() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.environment]
+            [tool.chalk.environment]
             python = "directory-but-no-site-packages"
             "#,
         ),
@@ -1259,7 +1270,7 @@ fn unix_system_installation_with_no_lib_directory() -> anyhow::Result<()> {
     --> Invalid setting in configuration file `<temp_dir>/pyproject.toml`
       |
     1 |
-    2 | [tool.ty.environment]
+    2 | [tool.chalk.environment]
     3 | python = "directory-but-no-site-packages"
       |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
       |
@@ -1753,6 +1764,7 @@ home = ./
     info: Searched in the following paths during module resolution:
     info:   1. <temp_dir>/project (first-party code)
     info:   2. vendored://stdlib (stdlib typeshed stubs vendored by ty)
+    info:   3. vendored://stubs (third-party stubs vendored by ty)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     error[unresolved-import]: Cannot resolve imported module `package1`
@@ -1764,6 +1776,7 @@ home = ./
     info: Searched in the following paths during module resolution:
     info:   1. <temp_dir>/project (first-party code)
     info:   2. vendored://stdlib (stdlib typeshed stubs vendored by ty)
+    info:   3. vendored://stubs (third-party stubs vendored by ty)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     error[unresolved-import]: Cannot resolve imported module `package1`
@@ -1775,6 +1788,7 @@ home = ./
     info: Searched in the following paths during module resolution:
     info:   1. <temp_dir>/project (first-party code)
     info:   2. vendored://stdlib (stdlib typeshed stubs vendored by ty)
+    info:   3. vendored://stubs (third-party stubs vendored by ty)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     error[unresolved-import]: Cannot resolve imported module `package1`
@@ -1786,6 +1800,7 @@ home = ./
     info: Searched in the following paths during module resolution:
     info:   1. <temp_dir>/project (first-party code)
     info:   2. vendored://stdlib (stdlib typeshed stubs vendored by ty)
+    info:   3. vendored://stubs (third-party stubs vendored by ty)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     Found 4 diagnostics
@@ -2136,7 +2151,8 @@ fn ty_environment_and_active_environment() -> anyhow::Result<()> {
     info: Searched in the following paths during module resolution:
     info:   1. <temp_dir>/ (first-party code)
     info:   2. vendored://stdlib (stdlib typeshed stubs vendored by ty)
-    info:   3. <temp_dir>/active-venv/<site-packages> (site-packages)
+    info:   3. vendored://stubs (third-party stubs vendored by ty)
+    info:   4. <temp_dir>/active-venv/<site-packages> (site-packages)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     Found 1 diagnostic
@@ -2255,7 +2271,8 @@ fn ty_system_environment_and_local_venv() -> anyhow::Result<()> {
     info: Searched in the following paths during module resolution:
     info:   1. <temp_dir>/ (first-party code)
     info:   2. vendored://stdlib (stdlib typeshed stubs vendored by ty)
-    info:   3. <temp_dir>/.venv/<site-packages> (site-packages)
+    info:   3. vendored://stubs (third-party stubs vendored by ty)
+    info:   4. <temp_dir>/.venv/<site-packages> (site-packages)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     Found 1 diagnostic
@@ -2272,7 +2289,7 @@ fn src_root_deprecation_warning() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.src]
+            [tool.chalk.src]
             root = "./src"
             "#,
         ),
@@ -2304,10 +2321,10 @@ fn src_root_deprecation_warning_with_environment_root() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.src]
+            [tool.chalk.src]
             root = "./src"
 
-            [tool.ty.environment]
+            [tool.chalk.environment]
             root = ["./app"]
             "#,
         ),
@@ -2340,10 +2357,10 @@ fn environment_root_takes_precedence_over_src_root() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.src]
+            [tool.chalk.src]
             root = "./src"
 
-            [tool.ty.environment]
+            [tool.chalk.environment]
             root = ["./app"]
             "#,
         ),
@@ -2559,6 +2576,7 @@ fn default_root_tests_package() -> anyhow::Result<()> {
     info:   1. <temp_dir>/src (first-party code)
     info:   2. <temp_dir>/ (first-party code)
     info:   3. vendored://stdlib (stdlib typeshed stubs vendored by ty)
+    info:   4. vendored://stubs (third-party stubs vendored by ty)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     Found 1 diagnostic
@@ -2629,6 +2647,7 @@ fn default_root_python_package() -> anyhow::Result<()> {
     info:   1. <temp_dir>/src (first-party code)
     info:   2. <temp_dir>/ (first-party code)
     info:   3. vendored://stdlib (stdlib typeshed stubs vendored by ty)
+    info:   4. vendored://stubs (third-party stubs vendored by ty)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     Found 1 diagnostic
@@ -2671,6 +2690,7 @@ fn default_root_python_package_pyi() -> anyhow::Result<()> {
     info:   1. <temp_dir>/src (first-party code)
     info:   2. <temp_dir>/ (first-party code)
     info:   3. vendored://stdlib (stdlib typeshed stubs vendored by ty)
+    info:   4. vendored://stubs (third-party stubs vendored by ty)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     Found 1 diagnostic
@@ -2709,6 +2729,7 @@ fn pythonpath_is_respected() -> anyhow::Result<()> {
     info:   1. <temp_dir>/src (first-party code)
     info:   2. <temp_dir>/ (first-party code)
     info:   3. vendored://stdlib (stdlib typeshed stubs vendored by ty)
+    info:   4. vendored://stubs (third-party stubs vendored by ty)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     Found 1 diagnostic
@@ -2762,6 +2783,7 @@ fn pythonpath_multiple_dirs_is_respected() -> anyhow::Result<()> {
     info:   1. <temp_dir>/src (first-party code)
     info:   2. <temp_dir>/ (first-party code)
     info:   3. vendored://stdlib (stdlib typeshed stubs vendored by ty)
+    info:   4. vendored://stubs (third-party stubs vendored by ty)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     error[unresolved-import]: Cannot resolve imported module `foo`
@@ -2774,6 +2796,7 @@ fn pythonpath_multiple_dirs_is_respected() -> anyhow::Result<()> {
     info:   1. <temp_dir>/src (first-party code)
     info:   2. <temp_dir>/ (first-party code)
     info:   3. vendored://stdlib (stdlib typeshed stubs vendored by ty)
+    info:   4. vendored://stubs (third-party stubs vendored by ty)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     Found 2 diagnostics

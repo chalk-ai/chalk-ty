@@ -195,7 +195,7 @@ fn format_tab(tab_name: &str, header: &str, content: &str) -> String {
 }
 /// Format the TOML header for the example usage for a given option.
 ///
-/// For example: `[tool.ty.rules]`.
+/// For example: `[tool.chalk.rules]`.
 fn format_snippet<'a>(
     scope: Option<&str>,
     example: &'a str,
@@ -211,17 +211,17 @@ fn format_snippet<'a>(
         .chain(scope)
         .join(".");
 
-    // Rewrite examples starting with `[tool.ty]` or `[[tool.ty]]` to their `ty.toml` equivalent.
+    // Rewrite examples starting with `[tool.chalk]` or `[[tool.chalk]]` to their `ty.toml` equivalent.
     if matches!(configuration, ConfigurationFile::TyToml) {
-        example = example.replace("[tool.ty.", "[").into();
+        example = example.replace("[tool.chalk.", "[").into();
     }
 
-    // Ex) `[[tool.ty.xx]]`
+    // Ex) `[[tool.chalk.xx]]`
     if example.starts_with(&format!("[[{header}")) {
         return (String::new(), example);
     }
 
-    // Ex) `[tool.ty.rules]`
+    // Ex) `[tool.chalk.rules]`
     if example.starts_with(&format!("[{header}")) {
         return (String::new(), example);
     }
@@ -265,7 +265,7 @@ impl ConfigurationFile {
 
     const fn parent_table(self) -> Option<&'static str> {
         match self {
-            Self::PyprojectToml => Some("tool.ty"),
+            Self::PyprojectToml => Some("tool.chalk"),
             Self::TyToml => None,
         }
     }

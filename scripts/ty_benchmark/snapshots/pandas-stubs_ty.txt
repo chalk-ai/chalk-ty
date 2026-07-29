@@ -1,2 +1,3 @@
-All checks passed!
-WARN Ignoring the `tool.ty` section in `<CWD>/pyproject.toml` because `<CWD>/ty.toml` takes precedence.
+pandas-stubs/_libs/tslibs/timedeltas.pyi:194:9: error[invalid-method-override] Invalid override of method `__mul__`: Definition is incompatible with `timedelta.__mul__`
+pandas-stubs/_libs/tslibs/timedeltas.pyi:200:9: error[invalid-method-override] Invalid override of method `__rmul__`: Definition is incompatible with `timedelta.__rmul__`
+Found 2 diagnostics

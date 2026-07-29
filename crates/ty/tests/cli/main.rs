@@ -250,7 +250,7 @@ fn cli_arguments_are_relative_to_the_current_directory() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.environment]
+            [tool.chalk.environment]
             python-version = "3.11"
             "#,
         ),
@@ -285,6 +285,7 @@ fn cli_arguments_are_relative_to_the_current_directory() -> anyhow::Result<()> {
     info: Searched in the following paths during module resolution:
     info:   1. <temp_dir>/ (first-party code)
     info:   2. vendored://stdlib (stdlib typeshed stubs vendored by ty)
+    info:   3. vendored://stubs (third-party stubs vendored by ty)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     Found 1 diagnostic
@@ -323,7 +324,7 @@ fn paths_in_configuration_files_are_relative_to_the_project_root() -> anyhow::Re
         (
             "pyproject.toml",
             r#"
-            [tool.ty.environment]
+            [tool.chalk.environment]
             python-version = "3.11"
             extra-paths = ["libs"]
             "#,
@@ -496,6 +497,7 @@ fn check_specific_paths() -> anyhow::Result<()> {
     info: Searched in the following paths during module resolution:
     info:   1. <temp_dir>/ (first-party code)
     info:   2. vendored://stdlib (stdlib typeshed stubs vendored by ty)
+    info:   3. vendored://stubs (third-party stubs vendored by ty)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     error[unresolved-import]: Cannot resolve imported module `does_not_exist`
@@ -507,6 +509,7 @@ fn check_specific_paths() -> anyhow::Result<()> {
     info: Searched in the following paths during module resolution:
     info:   1. <temp_dir>/ (first-party code)
     info:   2. vendored://stdlib (stdlib typeshed stubs vendored by ty)
+    info:   3. vendored://stubs (third-party stubs vendored by ty)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     Found 2 diagnostics
@@ -532,6 +535,7 @@ fn check_specific_paths() -> anyhow::Result<()> {
     info: Searched in the following paths during module resolution:
     info:   1. <temp_dir>/ (first-party code)
     info:   2. vendored://stdlib (stdlib typeshed stubs vendored by ty)
+    info:   3. vendored://stubs (third-party stubs vendored by ty)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     error[unresolved-import]: Cannot resolve imported module `does_not_exist`
@@ -543,6 +547,7 @@ fn check_specific_paths() -> anyhow::Result<()> {
     info: Searched in the following paths during module resolution:
     info:   1. <temp_dir>/ (first-party code)
     info:   2. vendored://stdlib (stdlib typeshed stubs vendored by ty)
+    info:   3. vendored://stubs (third-party stubs vendored by ty)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
 
     Found 2 diagnostics

@@ -31,7 +31,7 @@ ignore = [
     "E501", # We use ruff format
 ]
 
-[tool.ty.rules]
+[tool.chalk.rules]
 possibly-unresolved-reference = "error"
 division-by-zero = "error"
 unused-ignore-comment = "error"

@@ -20,8 +20,8 @@ pub struct PyProject {
 }
 
 impl PyProject {
-    pub(crate) fn ty(&self) -> Option<&Options> {
-        self.tool.as_ref().and_then(|tool| tool.ty.as_ref())
+    pub(crate) fn chalk(&self) -> Option<&Options> {
+        self.tool.as_ref().and_then(|tool| tool.chalk.as_ref())
     }
 }
 
@@ -42,8 +42,8 @@ impl PyProject {
         // lexicographically. Normalize rule order so that the `all` selector
         // is applied before per-rule selectors.
         if let Some(tool) = &mut pyproject.tool {
-            if let Some(ty) = &mut tool.ty {
-                ty.prioritize_all_selectors();
+            if let Some(chalk) = &mut tool.chalk {
+                chalk.prioritize_all_selectors();
             }
         }
         Ok(pyproject)
@@ -151,7 +151,7 @@ pub enum ResolveRequiresPythonError {
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub struct Tool {
-    pub ty: Option<Options>,
+    pub chalk: Option<Options>,
 }
 
 /// The normalized name of a package.

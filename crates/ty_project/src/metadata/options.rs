@@ -85,7 +85,7 @@ pub struct Options {
         default = r#"{...}"#,
         value_type = r#"dict[RuleName | "all", "ignore" | "warn" | "error"]"#,
         example = r#"
-            [tool.ty.rules]
+            [tool.chalk.rules]
             possibly-unresolved-reference = "warn"
             division-by-zero = "ignore"
         "#
@@ -1628,21 +1628,21 @@ fn build_module_glob_set(
 /// For example, to relax enforcement of rules in test files:
 ///
 /// ```toml
-/// [[tool.ty.overrides]]
+/// [[tool.chalk.overrides]]
 /// include = ["tests/**", "**/test_*.py"]
 ///
-/// [tool.ty.overrides.rules]
+/// [tool.chalk.overrides.rules]
 /// possibly-unresolved-reference = "warn"
 /// ```
 ///
 /// Or, to ignore a rule in generated files but retain enforcement in an important file:
 ///
 /// ```toml
-/// [[tool.ty.overrides]]
+/// [[tool.chalk.overrides]]
 /// include = ["generated/**"]
 /// exclude = ["generated/important.py"]
 ///
-/// [tool.ty.overrides.rules]
+/// [tool.chalk.overrides.rules]
 /// possibly-unresolved-reference = "ignore"
 /// ```
 #[derive(
@@ -1706,7 +1706,7 @@ pub struct OverrideOptions {
         default = r#"null"#,
         value_type = r#"list[str]"#,
         example = r#"
-            [[tool.ty.overrides]]
+            [[tool.chalk.overrides]]
             include = [
                 "src",
                 "tests",
@@ -1726,7 +1726,7 @@ pub struct OverrideOptions {
         default = r#"null"#,
         value_type = r#"list[str]"#,
         example = r#"
-            [[tool.ty.overrides]]
+            [[tool.chalk.overrides]]
             exclude = [
                 "generated",
                 "*.proto",
@@ -1747,10 +1747,10 @@ pub struct OverrideOptions {
         default = r#"{...}"#,
         value_type = r#"dict[RuleName | "all", "ignore" | "warn" | "error"]"#,
         example = r#"
-            [[tool.ty.overrides]]
+            [[tool.chalk.overrides]]
             include = ["src"]
 
-            [tool.ty.overrides.rules]
+            [tool.chalk.overrides.rules]
             possibly-unresolved-reference = "ignore"
         "#
     )]

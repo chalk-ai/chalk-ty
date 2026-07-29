@@ -39,7 +39,7 @@ fn configuration_rule_severity() -> anyhow::Result<()> {
     case.write_file(
         "pyproject.toml",
         r#"
-        [tool.ty.rules]
+        [tool.chalk.rules]
         division-by-zero = "warn" # promote to warn
         unresolved-reference = "ignore"
     "#,
@@ -98,6 +98,7 @@ fn cli_rule_severity() -> anyhow::Result<()> {
     info: Searched in the following paths during module resolution:
     info:   1. <temp_dir>/ (first-party code)
     info:   2. vendored://stdlib (stdlib typeshed stubs vendored by ty)
+    info:   3. vendored://stubs (third-party stubs vendored by ty)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
     info: rule `unresolved-import` is enabled by default
 
@@ -138,6 +139,7 @@ fn cli_rule_severity() -> anyhow::Result<()> {
     info: Searched in the following paths during module resolution:
     info:   1. <temp_dir>/ (first-party code)
     info:   2. vendored://stdlib (stdlib typeshed stubs vendored by ty)
+    info:   3. vendored://stubs (third-party stubs vendored by ty)
     info: make sure your Python environment is properly configured: https://docs.astral.sh/ty/modules/#python-environment
     info: rule `unresolved-import` was selected on the command line
 
@@ -233,7 +235,7 @@ fn configuration_unknown_rules() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.rules]
+            [tool.chalk.rules]
             division-by-zer = "warn" # incorrect rule name
             "#,
         ),
@@ -285,14 +287,14 @@ fn overrides_basic() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.rules]
+            [tool.chalk.rules]
             division-by-zero = "error"
             unresolved-reference = "error"
 
-            [[tool.ty.overrides]]
+            [[tool.chalk.overrides]]
             include = ["tests/**"]
 
-            [tool.ty.overrides.rules]
+            [tool.chalk.overrides.rules]
             division-by-zero = "warn"
             unresolved-reference = "ignore"
             "#,
@@ -359,19 +361,19 @@ fn overrides_precedence() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.rules]
+            [tool.chalk.rules]
             division-by-zero = "error"
 
             # First override: all test files
-            [[tool.ty.overrides]]
+            [[tool.chalk.overrides]]
             include = ["tests/**"]
-            [tool.ty.overrides.rules]
+            [tool.chalk.overrides.rules]
             division-by-zero = "warn"
 
             # Second override: specific test file (takes precedence)
-            [[tool.ty.overrides]]
+            [[tool.chalk.overrides]]
             include = ["tests/important.py"]
-            [tool.ty.overrides.rules]
+            [tool.chalk.overrides.rules]
             division-by-zero = "ignore"
             "#,
         ),
@@ -417,13 +419,13 @@ fn overrides_exclude() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.rules]
+            [tool.chalk.rules]
             division-by-zero = "error"
 
-            [[tool.ty.overrides]]
+            [[tool.chalk.overrides]]
             include = ["tests/**"]
             exclude = ["tests/important.py"]
-            [tool.ty.overrides.rules]
+            [tool.chalk.overrides.rules]
             division-by-zero = "warn"
             "#,
         ),
@@ -477,14 +479,14 @@ fn overrides_inherit_global() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.rules]
+            [tool.chalk.rules]
             division-by-zero = "warn"
             unresolved-reference = "error"
 
-            [[tool.ty.overrides]]
+            [[tool.chalk.overrides]]
             include = ["tests/**"]
 
-            [tool.ty.overrides.rules]
+            [tool.chalk.overrides.rules]
             # Override only division-by-zero, unresolved-reference should inherit from global
             division-by-zero = "ignore"
             "#,
@@ -549,12 +551,12 @@ fn overrides_invalid_include_glob() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.rules]
+            [tool.chalk.rules]
             division-by-zero = "error"
 
-            [[tool.ty.overrides]]
+            [[tool.chalk.overrides]]
             include = ["tests/[invalid"]  # Invalid glob: unclosed bracket
-            [tool.ty.overrides.rules]
+            [tool.chalk.overrides.rules]
             division-by-zero = "warn"
             "#,
         ),
@@ -576,10 +578,10 @@ fn overrides_invalid_include_glob() -> anyhow::Result<()> {
       Cause: error[invalid-glob]: Invalid pattern
      --> pyproject.toml:6:12
       |
-    5 | [[tool.ty.overrides]]
+    5 | [[tool.chalk.overrides]]
     6 | include = ["tests/[invalid"]  # Invalid glob: unclosed bracket
       |            ^^^^^^^^^^^^^^^^ unclosed character class; missing ']'
-    7 | [tool.ty.overrides.rules]
+    7 | [tool.chalk.overrides.rules]
     8 | division-by-zero = "warn"
       |
     "#);
@@ -594,13 +596,13 @@ fn overrides_invalid_exclude_glob() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.rules]
+            [tool.chalk.rules]
             division-by-zero = "error"
 
-            [[tool.ty.overrides]]
+            [[tool.chalk.overrides]]
             include = ["tests/**"]
             exclude = ["***/invalid"]     # Invalid glob: triple asterisk
-            [tool.ty.overrides.rules]
+            [tool.chalk.overrides.rules]
             division-by-zero = "warn"
             "#,
         ),
@@ -622,11 +624,11 @@ fn overrides_invalid_exclude_glob() -> anyhow::Result<()> {
       Cause: error[invalid-glob]: Invalid pattern
      --> pyproject.toml:7:12
       |
-    5 | [[tool.ty.overrides]]
+    5 | [[tool.chalk.overrides]]
     6 | include = ["tests/**"]
     7 | exclude = ["***/invalid"]     # Invalid glob: triple asterisk
       |            ^^^^^^^^^^^^^ Too many stars at position 1
-    8 | [tool.ty.overrides.rules]
+    8 | [tool.chalk.overrides.rules]
     9 | division-by-zero = "warn"
       |
     "#);
@@ -641,12 +643,12 @@ fn overrides_missing_include_exclude() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.rules]
+            [tool.chalk.rules]
             division-by-zero = "error"
 
-            [[tool.ty.overrides]]
+            [[tool.chalk.overrides]]
             # Missing both include and exclude - should warn
-            [tool.ty.overrides.rules]
+            [tool.chalk.overrides.rules]
             division-by-zero = "warn"
             "#,
         ),
@@ -665,8 +667,8 @@ fn overrides_missing_include_exclude() -> anyhow::Result<()> {
     warning[unnecessary-overrides-section]: Unnecessary `overrides` section
      --> pyproject.toml:5:1
       |
-    5 | [[tool.ty.overrides]]
-      | ^^^^^^^^^^^^^^^^^^^^^ This overrides section applies to all files
+    5 | [[tool.chalk.overrides]]
+      | ^^^^^^^^^^^^^^^^^^^^^^^^ This overrides section applies to all files
       |
     info: It has no `include` or `exclude` option restricting the files
     info: Restrict the files by adding a pattern to `include` or `exclude`...
@@ -696,12 +698,12 @@ fn overrides_empty_include() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.rules]
+            [tool.chalk.rules]
             division-by-zero = "error"
 
-            [[tool.ty.overrides]]
+            [[tool.chalk.overrides]]
             include = []  # Empty include - won't match any files
-            [tool.ty.overrides.rules]
+            [tool.chalk.overrides.rules]
             division-by-zero = "warn"
             "#,
         ),
@@ -749,12 +751,12 @@ fn overrides_no_actual_overrides() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.rules]
+            [tool.chalk.rules]
             division-by-zero = "error"
 
-            [[tool.ty.overrides]]
+            [[tool.chalk.overrides]]
             include = ["*.py"]  # Has patterns but no rule overrides
-            # Missing [tool.ty.overrides.rules] section entirely
+            # Missing [tool.chalk.overrides.rules] section entirely
             "#,
         ),
         (
@@ -772,8 +774,8 @@ fn overrides_no_actual_overrides() -> anyhow::Result<()> {
     warning[useless-overrides-section]: Useless `overrides` section
      --> pyproject.toml:5:1
       |
-    5 | [[tool.ty.overrides]]
-      | ^^^^^^^^^^^^^^^^^^^^^ This overrides section overrides no settings
+    5 | [[tool.chalk.overrides]]
+      | ^^^^^^^^^^^^^^^^^^^^^^^^ This overrides section overrides no settings
       |
     info: It has no `rules` or `analysis` table
     info: Add a `[overrides.rules]` or `[overrides.analysis]` table...
@@ -803,13 +805,13 @@ fn overrides_unknown_rules() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.rules]
+            [tool.chalk.rules]
             division-by-zero = "error"
 
-            [[tool.ty.overrides]]
+            [[tool.chalk.overrides]]
             include = ["tests/**"]
 
-            [tool.ty.overrides.rules]
+            [tool.chalk.overrides.rules]
             division-by-zero = "warn"
             division-by-zer = "error"  # incorrect rule name
             "#,
@@ -1029,7 +1031,7 @@ fn configuration_all_rules() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.rules]
+            [tool.chalk.rules]
             all = "ignore"
             unresolved-reference = "error"
             "#,
@@ -1077,7 +1079,7 @@ fn configuration_all_rules_with_rule_sorting_before_all() -> anyhow::Result<()> 
         (
             "pyproject.toml",
             r#"
-            [tool.ty.rules]
+            [tool.chalk.rules]
             all = "warn"
             abstract-method-in-final-class = "error"
             "#,
@@ -1137,10 +1139,10 @@ fn overrides_all_rules_with_rule_sorting_before_all() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [[tool.ty.overrides]]
+            [[tool.chalk.overrides]]
             include = ["src/**"]
 
-            [tool.ty.overrides.rules]
+            [tool.chalk.overrides.rules]
             all = "warn"
             abstract-method-in-final-class = "error"
             "#,
@@ -1198,13 +1200,13 @@ fn all_overrides() -> anyhow::Result<()> {
         (
             "pyproject.toml",
             r#"
-            [tool.ty.rules]
+            [tool.chalk.rules]
             all = "error"
 
-            [[tool.ty.overrides]]
+            [[tool.chalk.overrides]]
             include = ["tests/**"]
 
-            [tool.ty.overrides.rules]
+            [tool.chalk.overrides.rules]
             unresolved-reference = "warn"
             "#,
         ),

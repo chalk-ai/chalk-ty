@@ -915,7 +915,7 @@ def foo() -> str:
         .with_file(
             SystemPath::new("pyproject.toml"),
             r#"
-[tool.ty.src]
+[tool.chalk.src]
 include = ["systemtests/included.py"]
 "#,
         )?
@@ -924,7 +924,7 @@ include = ["systemtests/included.py"]
         .with_file(
             SystemPath::new("external/Y/pyproject.toml"),
             r#"
-[tool.ty.src]
+[tool.chalk.src]
 include = ["only_external.py"]
 "#,
         )?
