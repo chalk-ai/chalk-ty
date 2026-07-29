@@ -461,7 +461,7 @@ pub(super) fn compute_diagnostics(
     })
 }
 
-fn chalk_diagnostic_to_lsp(
+pub(super) fn chalk_diagnostic_to_lsp(
     db: &dyn Db,
     diagnostic: &ChalkDiagnostic,
     encoding: PositionEncoding,

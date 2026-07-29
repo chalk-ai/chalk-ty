@@ -1309,6 +1309,7 @@ impl Session {
                     routing_root: routing_root.clone(),
                     workspace_root: project.workspace_root.clone(),
                     kind: project.kind(),
+                    chalk_project: project.chalk_project(),
                     db: project.db.clone(),
                 })
                 .collect(),
@@ -1861,6 +1862,7 @@ pub(crate) struct RoutedProject {
     routing_root: SystemPathBuf,
     workspace_root: Option<SystemPathBuf>,
     kind: ProjectKind,
+    chalk_project: Option<ChalkProjectInput>,
 
     // Keep the database last for the same drop-order reason as `SessionSnapshot::projects`.
     db: ProjectDatabase,
@@ -1877,6 +1879,10 @@ impl RoutedProject {
 
     pub(crate) fn kind(&self) -> ProjectKind {
         self.kind
+    }
+
+    pub(crate) fn chalk_project(&self) -> Option<ChalkProjectInput> {
+        self.chalk_project
     }
 
     pub(crate) fn db(&self) -> &ProjectDatabase {

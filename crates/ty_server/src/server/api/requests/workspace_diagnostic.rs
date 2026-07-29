@@ -18,6 +18,7 @@ use ruff_db::system::SystemPath;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use ty_chalk::ChalkDiagnostic;
 use ty_ide::{Hint, hints};
 use ty_project::{Db as _, ProgressReporter, ProjectDatabase};
 
@@ -25,7 +26,7 @@ use crate::PositionEncoding;
 use crate::capabilities::ResolvedClientCapabilities;
 use crate::document::DocumentKey;
 use crate::server::api::diagnostics::{
-    Diagnostics, to_lsp_diagnostic, unnecessary_hints_to_lsp_diagnostics,
+    Diagnostics, chalk_diagnostic_to_lsp, to_lsp_diagnostic, unnecessary_hints_to_lsp_diagnostics,
 };
 use crate::server::api::traits::{
     BackgroundRequestHandler, RequestHandler, RetriableRequestHandler,
@@ -36,6 +37,8 @@ use crate::session::client::Client;
 use crate::session::index::Index;
 use crate::session::{GlobalSettings, SessionSnapshot, SuspendedWorkspaceDiagnosticRequest};
 use crate::system::file_to_uri;
+
+mod chalk;
 
 /// Handler for [Workspace diagnostics](workspace-diagnostics)
 ///
@@ -157,7 +160,10 @@ impl BackgroundRequestHandler for WorkspaceDiagnosticRequestHandler {
                 .into_iter()
                 .filter(|file| snapshot.project_owns_file(project, *file))
                 .collect();
-            db.check_files_with_reporter(files, &mut reporter);
+            let mut project_reporter =
+                chalk::ProjectReporter::new(&mut reporter, snapshot, project, &files);
+            db.check_files_with_reporter(files, &mut project_reporter);
+            project_reporter.finish();
         }
 
         Ok(reporter.into_final_report())
@@ -250,18 +256,15 @@ impl<'a> WorkspaceDiagnosticsProgressReporter<'a> {
         let state = self.state.into_inner().unwrap();
         state.response.into_final_report()
     }
-}
 
-impl ProgressReporter for WorkspaceDiagnosticsProgressReporter<'_> {
-    fn set_files(&mut self, files: usize) {
-        let state = self.state.get_mut().unwrap();
-        state.total_files += files;
-        state.report_progress(&self.work_done);
-    }
-
-    fn report_checked_file(&self, db: &ProjectDatabase, file: File, diagnostics: &[Diagnostic]) {
-        let unnecessary_hints = hints(db, file);
-
+    fn report_file(
+        &self,
+        db: &ProjectDatabase,
+        file: File,
+        diagnostics: &[Diagnostic],
+        chalk_diagnostics: &[ChalkDiagnostic],
+        unnecessary_hints: &[Hint],
+    ) {
         // Another thread might have panicked at this point because of a salsa cancellation which
         // poisoned the result. If the response is poisoned, just don't report and wait for our thread
         // to unwind with a salsa cancellation next.
@@ -279,16 +282,34 @@ impl ProgressReporter for WorkspaceDiagnosticsProgressReporter<'_> {
             state.report_progress(&self.work_done);
         }
 
-        // Don't report empty diagnostics. We clear previous diagnostics in `into_response`
+        // Don't report empty diagnostics. We clear previous diagnostics in `into_final_report`
         // which also handles the case where a file no longer has diagnostics because
         // it's no longer part of the project.
-        if !diagnostics.is_empty() || !unnecessary_hints.is_empty() {
-            state
-                .response
-                .write_diagnostics_for_file(db, file, diagnostics, &unnecessary_hints);
+        if !diagnostics.is_empty() || !chalk_diagnostics.is_empty() || !unnecessary_hints.is_empty()
+        {
+            state.response.write_diagnostics_for_file(
+                db,
+                file,
+                diagnostics,
+                chalk_diagnostics,
+                unnecessary_hints,
+            );
         }
 
         state.response.maybe_flush();
+    }
+}
+
+impl ProgressReporter for WorkspaceDiagnosticsProgressReporter<'_> {
+    fn set_files(&mut self, files: usize) {
+        let state = self.state.get_mut().unwrap();
+        state.total_files += files;
+        state.report_progress(&self.work_done);
+    }
+
+    fn report_checked_file(&self, db: &ProjectDatabase, file: File, diagnostics: &[Diagnostic]) {
+        let unnecessary_hints = hints(db, file);
+        self.report_file(db, file, diagnostics, &[], &unnecessary_hints);
     }
 
     fn report_diagnostics(&mut self, db: &ProjectDatabase, diagnostics: Vec<Diagnostic>) {
@@ -309,7 +330,7 @@ impl ProgressReporter for WorkspaceDiagnosticsProgressReporter<'_> {
 
         for (file, diagnostics) in by_file {
             let unnecessary_hints = hints(db, file);
-            response.write_diagnostics_for_file(db, file, &diagnostics, &unnecessary_hints);
+            response.write_diagnostics_for_file(db, file, &diagnostics, &[], &unnecessary_hints);
         }
         response.maybe_flush();
     }
@@ -397,6 +418,7 @@ impl<'a> ResponseWriter<'a> {
         db: &ProjectDatabase,
         file: File,
         diagnostics: &[Diagnostic],
+        chalk_diagnostics: &[ChalkDiagnostic],
         unnecessary_hints: &[Hint],
     ) {
         let Some(uri) = file_to_uri(db, file) else {
@@ -422,7 +444,7 @@ impl<'a> ResponseWriter<'a> {
         let result_id = Diagnostics::result_id_from_hash(
             db,
             diagnostics,
-            &[],
+            chalk_diagnostics,
             unnecessary_hints,
             self.client_capabilities,
         );
@@ -457,6 +479,14 @@ impl<'a> ResponseWriter<'a> {
                         )
                     })
                     .collect::<Vec<_>>();
+                lsp_diagnostics.extend(chalk_diagnostics.iter().filter_map(|diagnostic| {
+                    chalk_diagnostic_to_lsp(
+                        db,
+                        diagnostic,
+                        self.position_encoding,
+                        self.client_capabilities,
+                    )
+                }));
                 lsp_diagnostics.extend(unnecessary_hints_to_lsp_diagnostics(
                     db,
                     file,
