@@ -4,12 +4,12 @@ use anyhow::Result;
 use insta::{assert_compact_json_snapshot, assert_debug_snapshot};
 use lsp_server::RequestId;
 use lsp_types::{
-    DocumentDiagnosticReport, PartialResultParams, PreviousResultId, ProgressNotification, Uri,
-    WorkDoneProgressBegin, WorkDoneProgressEnd, WorkDoneProgressParams, WorkspaceDiagnosticParams,
-    WorkspaceDiagnosticReport, WorkspaceDiagnosticReportPartialResult,
+    DocumentDiagnosticReport, FileChangeType, FileEvent, PartialResultParams, PreviousResultId,
+    ProgressNotification, Uri, WorkDoneProgressBegin, WorkDoneProgressEnd, WorkDoneProgressParams,
+    WorkspaceDiagnosticParams, WorkspaceDiagnosticReport, WorkspaceDiagnosticReportPartialResult,
     WorkspaceDocumentDiagnosticReport,
 };
-use lsp_types::{TextDocumentContentChangeWholeDocument, WorkspaceDiagnosticRequest};
+use lsp_types::{Message, TextDocumentContentChangeWholeDocument, WorkspaceDiagnosticRequest};
 use ruff_db::system::SystemPath;
 use ty_server::{ClientOptions, DiagnosticMode};
 
@@ -539,6 +539,773 @@ def foo() -> str:
             panic!("Expected a full report when diagnostics have changed")
         }
     }
+
+    Ok(())
+}
+
+#[test]
+fn chalk_closed_helper_vertical_slice_updates_pull_diagnostics() -> Result<()> {
+    let workspace_root = SystemPath::new("src");
+    let ty_config = SystemPath::new("src/ty.toml");
+    let marker = SystemPath::new("src/project/chalk.yml");
+    let package = SystemPath::new("src/project/__init__.py");
+    let main = SystemPath::new("src/project/main.py");
+    let helper = SystemPath::new("src/project/helper.py");
+    let external = SystemPath::new("src/external.py");
+    let main_content = "\
+from project import helper
+from chalk import online
+import external
+
+def bad() -> str:
+    external.unsupported()
+    return 42
+
+@online
+def root():
+    helper.closed_edge()
+    helper.closed_edge()
+";
+    let safe_main_content = "\
+from project import helper
+from chalk import online
+import external
+
+def bad() -> str:
+    abs(1)
+    return 42
+
+@online
+def root():
+    helper.closed_edge()
+    helper.closed_edge()
+";
+    let statement_suppressed_main_content = "\
+from project import helper
+from chalk import online
+import external
+
+def bad() -> str:
+    external.unsupported()  # chalk: ignore[unsupported-function]
+    return 42
+
+@online
+def root():
+    helper.closed_edge()
+    helper.closed_edge()
+";
+    let function_suppressed_main_content = "\
+from project import helper
+from chalk import online
+import external
+
+# chalk: ignore[unsupported-function]
+def bad() -> str:
+    external.unsupported()
+    return 42
+
+@online
+def root():
+    helper.closed_edge()
+    helper.closed_edge()
+";
+    let ty_suppressed_main_content = "\
+from project import helper
+from chalk import online
+import external
+
+def bad() -> str:
+    external.unsupported()  # ty: ignore[unsupported-function]
+    return 42
+
+@online
+def root():
+    helper.closed_edge()
+    helper.closed_edge()
+";
+    let helper_content = "\
+from project import main
+
+def closed_edge():
+    main.bad()
+";
+    let disconnected_helper_content = "\
+def closed_edge():
+    pass
+";
+
+    // The ty root makes `external` importable while the nested Chalk root keeps it third-party.
+    let mut server = TestServerBuilder::new()?
+        .with_workspace(workspace_root, None)?
+        .with_file(ty_config, "")?
+        .with_file(marker, "")?
+        .with_file(package, "")?
+        .with_file(main, main_content)?
+        .with_file(helper, helper_content)?
+        .with_file(external, "def unsupported() -> None: pass\n")?
+        .build()
+        .wait_until_workspaces_are_initialized();
+
+    // Only `main.py` is opened. `helper.py` remains a closed first-party source throughout.
+    server.open_text_document(main, main_content, 1);
+    let DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(first) =
+        server.document_diagnostic_request(main, None)
+    else {
+        panic!("first document diagnostic response must be a full report");
+    };
+    let first_id = first
+        .full_document_diagnostic_report
+        .result_id
+        .clone()
+        .expect("merged diagnostics must have a result ID");
+    let diagnostics = &first.full_document_diagnostic_report.items;
+
+    assert!(
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic.source.as_deref() == Some("ty")
+                && diagnostic.code.as_ref()
+                    == Some(&lsp_types::Code::String("invalid-return-type".to_owned()))
+        }),
+        "ordinary ty diagnostics must be preserved"
+    );
+    let chalk_diagnostics = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.source.as_deref() == Some("chalk"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        chalk_diagnostics.len(),
+        1,
+        "repeated paths must not duplicate the source diagnostic"
+    );
+    let chalk = chalk_diagnostics[0];
+    assert_eq!(
+        chalk.range,
+        lsp_types::Range::new(
+            lsp_types::Position::new(5, 4),
+            lsp_types::Position::new(5, 26)
+        )
+    );
+    assert_eq!(chalk.severity, Some(lsp_types::DiagnosticSeverity::Warning));
+    assert_eq!(
+        chalk.code,
+        Some(lsp_types::Code::String("unsupported-function".to_owned()))
+    );
+    assert_eq!(
+        chalk.message,
+        Message::String(
+            "Call is not supported by the static accelerator\n\
+             Target `external.unsupported`: no static-accelerator registry entry"
+                .to_owned()
+        )
+    );
+    assert!(chalk.code_description.is_none());
+    assert!(chalk.related_information.is_none());
+    assert!(chalk.tags.is_none());
+    assert!(chalk.data.is_none());
+
+    let helper_path = server.file_path(helper);
+    std::fs::write(&helper_path, disconnected_helper_content)?;
+    server.did_change_watched_files(vec![FileEvent {
+        uri: server.file_uri(helper),
+        kind: FileChangeType::Changed,
+    }]);
+    let DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(disconnected) =
+        server.document_diagnostic_request(main, Some(first_id.clone()))
+    else {
+        panic!("closed helper edit must invalidate the open main report");
+    };
+    let disconnected_id = disconnected
+        .full_document_diagnostic_report
+        .result_id
+        .clone()
+        .expect("ordinary ty diagnostic must retain a result ID");
+    assert_ne!(first_id, disconnected_id);
+    assert!(
+        disconnected
+            .full_document_diagnostic_report
+            .items
+            .iter()
+            .all(|diagnostic| diagnostic.source.as_deref() != Some("chalk"))
+    );
+
+    std::fs::write(&helper_path, helper_content)?;
+    server.did_change_watched_files(vec![FileEvent {
+        uri: server.file_uri(helper),
+        kind: FileChangeType::Changed,
+    }]);
+    let DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(reconnected) =
+        server.document_diagnostic_request(main, Some(disconnected_id.clone()))
+    else {
+        panic!("restoring the closed helper edge must invalidate the open main report");
+    };
+    let reconnected_id = reconnected
+        .full_document_diagnostic_report
+        .result_id
+        .clone()
+        .expect("merged diagnostics must retain a result ID");
+    assert_ne!(disconnected_id, reconnected_id);
+    assert_eq!(
+        reconnected
+            .full_document_diagnostic_report
+            .items
+            .iter()
+            .filter(|diagnostic| diagnostic.source.as_deref() == Some("chalk"))
+            .count(),
+        1
+    );
+
+    server.change_text_document(
+        main,
+        vec![
+            lsp_types::TextDocumentContentChangeEvent::TextDocumentContentChangeWholeDocument(
+                TextDocumentContentChangeWholeDocument {
+                    text: safe_main_content.to_owned(),
+                },
+            ),
+        ],
+        2,
+    );
+    let DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(safe) =
+        server.document_diagnostic_request(main, Some(reconnected_id.clone()))
+    else {
+        panic!("unsaved type-fact change must invalidate the open main report");
+    };
+    let safe_id = safe
+        .full_document_diagnostic_report
+        .result_id
+        .clone()
+        .expect("ordinary ty diagnostic must retain a result ID");
+    assert_ne!(reconnected_id, safe_id);
+    assert!(
+        safe.full_document_diagnostic_report
+            .items
+            .iter()
+            .all(|diagnostic| diagnostic.source.as_deref() != Some("chalk"))
+    );
+
+    server.change_text_document(
+        main,
+        vec![
+            lsp_types::TextDocumentContentChangeEvent::TextDocumentContentChangeWholeDocument(
+                TextDocumentContentChangeWholeDocument {
+                    text: main_content.to_owned(),
+                },
+            ),
+        ],
+        3,
+    );
+    let DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(unsuppressed) =
+        server.document_diagnostic_request(main, Some(safe_id.clone()))
+    else {
+        panic!("restoring the unsupported call must invalidate the open main report");
+    };
+    let unsuppressed_id = unsuppressed
+        .full_document_diagnostic_report
+        .result_id
+        .expect("merged diagnostics must retain a result ID");
+    assert_ne!(safe_id, unsuppressed_id);
+
+    server.change_text_document(
+        main,
+        vec![
+            lsp_types::TextDocumentContentChangeEvent::TextDocumentContentChangeWholeDocument(
+                TextDocumentContentChangeWholeDocument {
+                    text: statement_suppressed_main_content.to_owned(),
+                },
+            ),
+        ],
+        4,
+    );
+    let DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(statement_suppressed) =
+        server.document_diagnostic_request(main, Some(unsuppressed_id.clone()))
+    else {
+        panic!("statement suppression must invalidate the open main report");
+    };
+    let statement_suppressed_id = statement_suppressed
+        .full_document_diagnostic_report
+        .result_id
+        .clone()
+        .expect("ordinary ty diagnostic must retain a result ID");
+    assert_ne!(unsuppressed_id, statement_suppressed_id);
+    assert!(
+        statement_suppressed
+            .full_document_diagnostic_report
+            .items
+            .iter()
+            .all(|diagnostic| diagnostic.source.as_deref() != Some("chalk"))
+    );
+
+    server.change_text_document(
+        main,
+        vec![
+            lsp_types::TextDocumentContentChangeEvent::TextDocumentContentChangeWholeDocument(
+                TextDocumentContentChangeWholeDocument {
+                    text: main_content.to_owned(),
+                },
+            ),
+        ],
+        5,
+    );
+    let DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(unsuppressed) =
+        server.document_diagnostic_request(main, Some(statement_suppressed_id.clone()))
+    else {
+        panic!("removing statement suppression must invalidate the open main report");
+    };
+    let unsuppressed_id = unsuppressed
+        .full_document_diagnostic_report
+        .result_id
+        .expect("merged diagnostics must retain a result ID");
+    assert_ne!(statement_suppressed_id, unsuppressed_id);
+
+    server.change_text_document(
+        main,
+        vec![
+            lsp_types::TextDocumentContentChangeEvent::TextDocumentContentChangeWholeDocument(
+                TextDocumentContentChangeWholeDocument {
+                    text: function_suppressed_main_content.to_owned(),
+                },
+            ),
+        ],
+        6,
+    );
+    let DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(function_suppressed) =
+        server.document_diagnostic_request(main, Some(unsuppressed_id.clone()))
+    else {
+        panic!("function suppression must invalidate the open main report");
+    };
+    let function_suppressed_id = function_suppressed
+        .full_document_diagnostic_report
+        .result_id
+        .clone()
+        .expect("ordinary ty diagnostic must retain a result ID");
+    assert_ne!(unsuppressed_id, function_suppressed_id);
+    assert!(
+        function_suppressed
+            .full_document_diagnostic_report
+            .items
+            .iter()
+            .all(|diagnostic| diagnostic.source.as_deref() != Some("chalk"))
+    );
+
+    server.change_text_document(
+        main,
+        vec![
+            lsp_types::TextDocumentContentChangeEvent::TextDocumentContentChangeWholeDocument(
+                TextDocumentContentChangeWholeDocument {
+                    text: ty_suppressed_main_content.to_owned(),
+                },
+            ),
+        ],
+        7,
+    );
+    let DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(ty_suppressed) =
+        server.document_diagnostic_request(main, Some(function_suppressed_id.clone()))
+    else {
+        panic!("ty suppression change must invalidate the open main report");
+    };
+    assert_ne!(
+        Some(&function_suppressed_id),
+        ty_suppressed
+            .full_document_diagnostic_report
+            .result_id
+            .as_ref()
+    );
+    assert_eq!(
+        ty_suppressed
+            .full_document_diagnostic_report
+            .items
+            .iter()
+            .filter(|diagnostic| diagnostic.source.as_deref() == Some("chalk"))
+            .count(),
+        1,
+        "ty suppression must not suppress Chalk diagnostics"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn chalk_detail_changes_update_pull_result_id() -> Result<()> {
+    let workspace_root = SystemPath::new("src");
+    let marker = SystemPath::new("src/chalk.yml");
+    let main = SystemPath::new("src/main.py");
+    let first_content = "\
+from chalk import online
+
+@online
+def root():
+    abs(\"one\")
+";
+    let second_content = "\
+from chalk import online
+
+@online
+def root():
+    abs(\"two\")
+";
+    let third_content = "\
+from chalk import online
+
+@online
+def root():
+    round(\"x\")
+";
+
+    let mut server = TestServerBuilder::new()?
+        .with_workspace(workspace_root, None)?
+        .with_file(marker, "")?
+        .with_file(main, first_content)?
+        .build()
+        .wait_until_workspaces_are_initialized();
+
+    server.open_text_document(main, first_content, 1);
+    let DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(first) =
+        server.document_diagnostic_request(main, None)
+    else {
+        panic!("first document diagnostic response must be a full report");
+    };
+    let first_id = first
+        .full_document_diagnostic_report
+        .result_id
+        .clone()
+        .expect("Chalk diagnostics must have a result ID");
+    let first_chalk = first
+        .full_document_diagnostic_report
+        .items
+        .iter()
+        .find(|diagnostic| diagnostic.source.as_deref() == Some("chalk"))
+        .expect("the unsupported call should emit a Chalk diagnostic");
+    let Message::String(first_message) = &first_chalk.message else {
+        panic!("Chalk diagnostics must use string messages");
+    };
+    let first_lines = first_message.lines().collect::<Vec<_>>();
+    assert_eq!(
+        first_lines[..3],
+        [
+            "Call is not supported by the static accelerator",
+            "Target `builtins.abs`: arguments do not match a registered signature",
+            "Observed call: abs(\"one\")",
+        ]
+    );
+    assert!(
+        first_lines[3..]
+            .iter()
+            .all(|line| line.starts_with("Supported: abs("))
+    );
+    assert!(!first_lines[3..].is_empty());
+    assert!(first_chalk.related_information.is_none());
+    let first_range = first_chalk.range;
+
+    server.change_text_document(
+        main,
+        vec![
+            lsp_types::TextDocumentContentChangeEvent::TextDocumentContentChangeWholeDocument(
+                TextDocumentContentChangeWholeDocument {
+                    text: second_content.to_owned(),
+                },
+            ),
+        ],
+        2,
+    );
+    let DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(second) =
+        server.document_diagnostic_request(main, Some(first_id.clone()))
+    else {
+        panic!("an observed-call detail change must invalidate the report");
+    };
+    let second_id = second
+        .full_document_diagnostic_report
+        .result_id
+        .clone()
+        .expect("Chalk diagnostics must retain a result ID");
+    assert_ne!(first_id, second_id);
+    let second_chalk = second
+        .full_document_diagnostic_report
+        .items
+        .iter()
+        .find(|diagnostic| diagnostic.source.as_deref() == Some("chalk"))
+        .expect("the changed unsupported call should emit a Chalk diagnostic");
+    assert_eq!(second_chalk.range, first_range);
+    assert!(
+        matches!(
+            &second_chalk.message,
+            Message::String(message) if message.contains("Observed call: abs(\"two\")")
+        ),
+        "the rendered observed call should update"
+    );
+
+    server.change_text_document(
+        main,
+        vec![
+            lsp_types::TextDocumentContentChangeEvent::TextDocumentContentChangeWholeDocument(
+                TextDocumentContentChangeWholeDocument {
+                    text: third_content.to_owned(),
+                },
+            ),
+        ],
+        3,
+    );
+    let DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(third) =
+        server.document_diagnostic_request(main, Some(second_id.clone()))
+    else {
+        panic!("a supported-signature detail change must invalidate the report");
+    };
+    let third_id = third
+        .full_document_diagnostic_report
+        .result_id
+        .clone()
+        .expect("Chalk diagnostics must retain a result ID");
+    assert_ne!(second_id, third_id);
+    let third_chalk = third
+        .full_document_diagnostic_report
+        .items
+        .iter()
+        .find(|diagnostic| diagnostic.source.as_deref() == Some("chalk"))
+        .expect("the retargeted unsupported call should emit a Chalk diagnostic");
+    assert_eq!(third_chalk.range, first_range);
+    let Message::String(third_message) = &third_chalk.message else {
+        panic!("Chalk diagnostics must use string messages");
+    };
+    assert!(third_message.contains("Observed call: round(\"x\")"));
+    assert!(
+        third_message
+            .lines()
+            .any(|line| line.starts_with("Supported: round("))
+    );
+
+    Ok(())
+}
+
+#[test]
+fn chalk_related_location_source_change_updates_pull_result_id() -> Result<()> {
+    let workspace_root = SystemPath::new("src");
+    let ty_config = SystemPath::new("src/ty.toml");
+    let marker = SystemPath::new("src/project/chalk.yml");
+    let package = SystemPath::new("src/project/__init__.py");
+    let main = SystemPath::new("src/project/main.py");
+    let external = SystemPath::new("src/external.py");
+    let main_content = "\
+from chalk import online
+import external
+
+@online
+def root():
+    external.unsupported()
+";
+    let external_before = "#abcd\ndef unsupported(): pass\n";
+    let external_after = "#abc\n\ndef unsupported(): pass\n";
+    assert_eq!(external_before.len(), external_after.len());
+
+    let mut server = TestServerBuilder::new()?
+        .with_workspace(workspace_root, None)?
+        .with_file(ty_config, "")?
+        .with_file(marker, "")?
+        .with_file(package, "")?
+        .with_file(main, main_content)?
+        .with_file(external, external_before)?
+        .enable_diagnostic_related_information(true)
+        .build()
+        .wait_until_workspaces_are_initialized();
+
+    server.open_text_document(main, main_content, 1);
+    let DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(first) =
+        server.document_diagnostic_request(main, None)
+    else {
+        panic!("first document diagnostic response must be a full report");
+    };
+    let first_id = first
+        .full_document_diagnostic_report
+        .result_id
+        .clone()
+        .expect("Chalk diagnostics must have a result ID");
+    let first_chalk = first
+        .full_document_diagnostic_report
+        .items
+        .iter()
+        .find(|diagnostic| diagnostic.source.as_deref() == Some("chalk"))
+        .expect("the unsupported call should emit a Chalk diagnostic");
+    let first_related = first_chalk
+        .related_information
+        .as_deref()
+        .expect("the unsupported target should be rendered as related information");
+    assert_eq!(first_related.len(), 1);
+    assert_eq!(first_related[0].location.uri, server.file_uri(external));
+    assert_eq!(first_related[0].location.range.start.line, 1);
+    let first_message = first_chalk.message.clone();
+    let first_range = first_chalk.range;
+
+    std::fs::write(server.file_path(external), external_after)?;
+    server.did_change_watched_files(vec![FileEvent {
+        uri: server.file_uri(external),
+        kind: FileChangeType::Changed,
+    }]);
+
+    let DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(second) =
+        server.document_diagnostic_request(main, Some(first_id.clone()))
+    else {
+        panic!("a related-location source change must invalidate the report");
+    };
+    let second_id = second
+        .full_document_diagnostic_report
+        .result_id
+        .clone()
+        .expect("Chalk diagnostics must retain a result ID");
+    assert_ne!(first_id, second_id);
+    let second_chalk = second
+        .full_document_diagnostic_report
+        .items
+        .iter()
+        .find(|diagnostic| diagnostic.source.as_deref() == Some("chalk"))
+        .expect("the unsupported call should retain its Chalk diagnostic");
+    assert_eq!(second_chalk.message, first_message);
+    assert_eq!(second_chalk.range, first_range);
+    let second_related = second_chalk
+        .related_information
+        .as_deref()
+        .expect("the unsupported target should retain related information");
+    assert_eq!(second_related.len(), 1);
+    assert_eq!(second_related[0].location.uri, server.file_uri(external));
+    assert_eq!(second_related[0].location.range.start.line, 2);
+
+    Ok(())
+}
+
+#[test]
+fn containing_chalk_root_routes_workspace_document_diagnostics() -> Result<()> {
+    let repository = SystemPath::new("repository");
+    let workspace = repository.join("service");
+    let main = workspace.join("main.py");
+    let content = "value = 1  # chalk: ignore[future-code]\n";
+    let mut server = TestServerBuilder::new()?
+        .with_workspace(&workspace, None)?
+        .with_file(repository.join("chalk.yml"), "")?
+        .with_file(&main, content)?
+        .build()
+        .wait_until_workspaces_are_initialized();
+
+    server.open_text_document(&main, content, 1);
+    let DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(report) =
+        server.document_diagnostic_request(&main, None)
+    else {
+        panic!("the containing Chalk project must return a full document report");
+    };
+    let diagnostics = report.full_document_diagnostic_report.items;
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].source.as_deref(), Some("chalk"));
+    assert_eq!(
+        diagnostics[0].code,
+        Some(lsp_types::Code::String(
+            "unknown-chalk-suppression".to_owned()
+        ))
+    );
+
+    Ok(())
+}
+
+#[test]
+fn chalk_diagnostics_require_a_project_marker() -> Result<()> {
+    let workspace_root = SystemPath::new("src");
+    let main = SystemPath::new("src/main.py");
+    let main_content = "value = 1  # chalk: ignore[future-code]\n";
+
+    let mut server = TestServerBuilder::new()?
+        .with_workspace(workspace_root, None)?
+        .with_file(main, main_content)?
+        .build()
+        .wait_until_workspaces_are_initialized();
+
+    server.open_text_document(main, main_content, 1);
+    let DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(report) =
+        server.document_diagnostic_request(main, None)
+    else {
+        panic!("first document diagnostic response must be a full report");
+    };
+    assert!(
+        report
+            .full_document_diagnostic_report
+            .items
+            .iter()
+            .all(|diagnostic| diagnostic.source.as_deref() != Some("chalk"))
+    );
+
+    Ok(())
+}
+
+#[test]
+fn chalk_only_suppression_change_updates_result_id() -> Result<()> {
+    let workspace_root = SystemPath::new("src");
+    let marker = SystemPath::new("src/chalk.yml");
+    let main = SystemPath::new("src/main.py");
+    let first_content = "value = 1  # chalk: ignore[future-code]\n";
+    let second_content = "value = 1  # chalk: ignore[other-code]\n";
+
+    let mut server = TestServerBuilder::new()?
+        .with_workspace(workspace_root, None)?
+        .with_file(marker, "")?
+        .with_file(main, first_content)?
+        .build()
+        .wait_until_workspaces_are_initialized();
+
+    server.open_text_document(main, first_content, 1);
+    let DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(first) =
+        server.document_diagnostic_request(main, None)
+    else {
+        panic!("first document diagnostic response must be a full report");
+    };
+    assert_eq!(first.full_document_diagnostic_report.items.len(), 1);
+    let first_diagnostic = &first.full_document_diagnostic_report.items[0];
+    assert_eq!(first_diagnostic.source.as_deref(), Some("chalk"));
+    assert_eq!(
+        first_diagnostic.range,
+        lsp_types::Range::new(
+            lsp_types::Position::new(0, 27),
+            lsp_types::Position::new(0, 38)
+        )
+    );
+    assert_eq!(
+        first_diagnostic.severity,
+        Some(lsp_types::DiagnosticSeverity::Warning)
+    );
+    assert_eq!(
+        first_diagnostic.code,
+        Some(lsp_types::Code::String(
+            "unknown-chalk-suppression".to_owned()
+        ))
+    );
+    assert_eq!(
+        first_diagnostic.message,
+        lsp_types::Message::String("Unknown Chalk suppression code: future-code".to_owned())
+    );
+    let first_id = first
+        .full_document_diagnostic_report
+        .result_id
+        .expect("Chalk-only diagnostics must have a result ID");
+
+    server.change_text_document(
+        main,
+        vec![
+            lsp_types::TextDocumentContentChangeEvent::TextDocumentContentChangeWholeDocument(
+                TextDocumentContentChangeWholeDocument {
+                    text: second_content.to_owned(),
+                },
+            ),
+        ],
+        2,
+    );
+    let DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(second) =
+        server.document_diagnostic_request(main, Some(first_id.clone()))
+    else {
+        panic!("changed Chalk diagnostic must produce a new full report");
+    };
+    let second_id = second
+        .full_document_diagnostic_report
+        .result_id
+        .expect("Chalk-only diagnostics must retain a result ID");
+    assert_ne!(first_id, second_id);
+    assert_eq!(
+        second.full_document_diagnostic_report.items[0].message,
+        lsp_types::Message::String("Unknown Chalk suppression code: other-code".to_owned())
+    );
 
     Ok(())
 }
