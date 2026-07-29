@@ -1328,13 +1328,15 @@ impl TestServerBuilder {
     }
 
     /// Enable or disable file watching capability
-    #[expect(dead_code)]
     pub(crate) fn enable_did_change_watched_files(mut self, enabled: bool) -> Self {
         self.client_capabilities
             .workspace
             .get_or_insert_default()
             .did_change_watched_files = if enabled {
-            Some(DidChangeWatchedFilesClientCapabilities::default())
+            Some(DidChangeWatchedFilesClientCapabilities {
+                dynamic_registration: Some(true),
+                relative_pattern_support: Some(true),
+            })
         } else {
             None
         };
