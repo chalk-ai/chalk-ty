@@ -4,7 +4,7 @@ use salsa::Setter;
 use ty_project::Db;
 use ty_project::watch::ChangeEvent;
 
-use crate::project::configured_chalkignore;
+use crate::project::{configured_chalkignore, is_source_candidate};
 use crate::{ChalkProject, ChalkProjectError};
 
 /// The active Chalk project visible to Salsa queries in a project database.
@@ -54,8 +54,8 @@ impl ActiveChalkProject {
         let (source_files, ignore_path) = source_files(db, &project, &[])?;
         let input = ChalkProjectInput::new(
             db,
-            project.root().to_path_buf(),
-            project.config_path().to_path_buf(),
+            project.root.clone(),
+            project.config_path.clone(),
             source_files,
         );
 
@@ -81,8 +81,8 @@ impl ActiveChalkProject {
         let Some(path) = file.path(db).as_system_path() else {
             return false;
         };
-        if !path.starts_with(self.project.root())
-            || !is_source(path)
+        if !path.starts_with(&self.project.root)
+            || !is_source_candidate(path)
             || self.open_sources.contains(&file)
         {
             return false;
@@ -138,7 +138,7 @@ impl ActiveChalkProject {
             return true;
         }
 
-        if !path.starts_with(self.project.root()) {
+        if !path.starts_with(&self.project.root) {
             return false;
         }
 
@@ -147,7 +147,7 @@ impl ActiveChalkProject {
                 true
             }
             ChangeEvent::Changed { .. } => {
-                path == self.project.config_path()
+                path == self.project.config_path.as_path()
                     || matches!(path.file_name(), Some(".gitignore" | ".chalkignore"))
             }
             ChangeEvent::CreatedVirtual(_)

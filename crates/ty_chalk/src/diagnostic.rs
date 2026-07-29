@@ -18,24 +18,12 @@ const MAX_OBSERVED_CALL_CHARACTERS: usize = 160;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ChalkDiagnostic {
-    file: File,
-    range: TextRange,
-    kind: ChalkDiagnosticKind,
+    pub file: File,
+    pub range: TextRange,
+    pub kind: ChalkDiagnosticKind,
 }
 
 impl ChalkDiagnostic {
-    pub fn file(&self) -> File {
-        self.file
-    }
-
-    pub fn range(&self) -> TextRange {
-        self.range
-    }
-
-    pub fn kind(&self) -> &ChalkDiagnosticKind {
-        &self.kind
-    }
-
     pub fn unsupported_function_details(&self) -> Option<&UnsupportedFunctionDetails> {
         let ChalkDiagnosticKind::UnsupportedFunction(details) = &self.kind else {
             return None;
@@ -90,44 +78,22 @@ pub enum ChalkDiagnosticKind {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct UnsupportedFunctionDetails {
-    targets: Box<[UnsupportedTargetDetail]>,
+    pub targets: Box<[UnsupportedTargetDetail]>,
     observed_call: Option<Box<str>>,
-    supported_signatures: Box<[Box<str>]>,
+    pub supported_signatures: Box<[Box<str>]>,
 }
 
 impl UnsupportedFunctionDetails {
-    pub fn targets(&self) -> &[UnsupportedTargetDetail] {
-        &self.targets
-    }
-
     pub fn observed_call(&self) -> Option<&str> {
         self.observed_call.as_deref()
-    }
-
-    pub fn supported_signatures(&self) -> &[Box<str>] {
-        &self.supported_signatures
     }
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct UnsupportedTargetDetail {
-    label: Box<str>,
-    reason: CallNoMatchReason,
-    location: Option<FileRange>,
-}
-
-impl UnsupportedTargetDetail {
-    pub fn label(&self) -> &str {
-        &self.label
-    }
-
-    pub fn reason(&self) -> CallNoMatchReason {
-        self.reason
-    }
-
-    pub fn location(&self) -> Option<FileRange> {
-        self.location
-    }
+    pub label: Box<str>,
+    pub reason: CallNoMatchReason,
+    pub location: Option<FileRange>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -413,12 +379,12 @@ mod tests {
             ],
         );
 
-        assert_eq!(details.targets().len(), 4);
+        assert_eq!(details.targets.len(), 4);
         assert_eq!(
             details
-                .targets()
+                .targets
                 .iter()
-                .map(|target| (target.label(), target.reason()))
+                .map(|target| (target.label.as_ref(), target.reason))
                 .collect::<Vec<_>>(),
             [
                 ("alpha", CallNoMatchReason::MissingRegistryEntry),
@@ -427,8 +393,8 @@ mod tests {
                 ("beta", CallNoMatchReason::MissingRegistryEntry),
             ]
         );
-        assert_eq!(details.targets()[0].location(), a_location);
-        assert_eq!(details.targets()[1].location(), z_location);
+        assert_eq!(details.targets[0].location, a_location);
+        assert_eq!(details.targets[1].location, z_location);
     }
 
     #[test]
@@ -447,7 +413,7 @@ mod tests {
         );
 
         assert_eq!(details.observed_call(), None);
-        assert!(details.supported_signatures().is_empty());
+        assert!(details.supported_signatures.is_empty());
     }
 
     #[test]
@@ -468,11 +434,11 @@ mod tests {
         assert_eq!(details.observed_call(), Some("abs(\"x\")"));
         assert!(
             details
-                .supported_signatures()
+                .supported_signatures
                 .iter()
                 .all(|signature| signature.starts_with("abs("))
         );
-        assert!(!details.supported_signatures().is_empty());
+        assert!(!details.supported_signatures.is_empty());
     }
 
     #[test]
@@ -506,10 +472,10 @@ mod tests {
             ],
         );
 
-        assert_eq!(details.supported_signatures().len(), 3);
+        assert_eq!(details.supported_signatures.len(), 3);
         assert!(
             details
-                .supported_signatures()
+                .supported_signatures
                 .last()
                 .is_some_and(|signature| signature.starts_with("... ["))
         );
@@ -573,16 +539,16 @@ mod tests {
                 assert!(observed.starts_with("bool("), "{observed}");
                 "bool"
             };
-            assert!(!details.supported_signatures().is_empty());
+            assert!(!details.supported_signatures.is_empty());
             assert!(
                 details
-                    .supported_signatures()
+                    .supported_signatures
                     .iter()
                     .all(|signature| signature.starts_with(source_name))
             );
             assert!(
                 details
-                    .supported_signatures()
+                    .supported_signatures
                     .iter()
                     .all(|signature| !signature.contains("__len__")
                         && !signature.contains("__bool__"))

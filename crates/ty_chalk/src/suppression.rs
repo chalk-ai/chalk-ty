@@ -53,24 +53,12 @@ pub(crate) struct SuppressionProblem {
 
 #[derive(Debug)]
 pub(crate) struct Suppressions<'db> {
-    function: Box<[FunctionSuppression<'db>]>,
-    statement: Box<[StatementSuppression]>,
-    problems: Box<[SuppressionProblem]>,
+    pub(crate) function: Box<[FunctionSuppression<'db>]>,
+    pub(crate) statement: Box<[StatementSuppression]>,
+    pub(crate) problems: Box<[SuppressionProblem]>,
 }
 
 impl<'db> Suppressions<'db> {
-    pub(crate) fn function(&self) -> &[FunctionSuppression<'db>] {
-        &self.function
-    }
-
-    pub(crate) fn statement(&self) -> &[StatementSuppression] {
-        &self.statement
-    }
-
-    pub(crate) fn problems(&self) -> &[SuppressionProblem] {
-        &self.problems
-    }
-
     #[cfg(test)]
     fn suppresses_function(&self, definition: Definition<'db>, code: SuppressionCode) -> bool {
         self.function
@@ -447,10 +435,10 @@ b = 5  # type: ignore[unsupported-function]
             parsed.syntax().body[2].range(),
             SuppressionCode::UnsupportedFunction
         ));
-        assert_eq!(suppressions.statement().len(), 2);
+        assert_eq!(suppressions.statement.len(), 2);
 
         let unknown = suppressions
-            .problems()
+            .problems
             .iter()
             .filter(|problem| problem.kind == SuppressionProblemKind::UnknownCode)
             .map(|problem| text(source, problem.range))
@@ -470,10 +458,10 @@ b = 5  # chalk: ignore[unsupported-function] trailing
         let (db, file) = setup(source);
         let suppressions = extract_suppressions(&db, file);
 
-        assert!(suppressions.statement().is_empty());
+        assert!(suppressions.statement.is_empty());
         assert_eq!(
             suppressions
-                .problems()
+                .problems
                 .iter()
                 .map(|problem| problem.kind)
                 .collect::<Vec<_>>(),
@@ -487,7 +475,7 @@ b = 5  # chalk: ignore[unsupported-function] trailing
         );
         assert_eq!(
             suppressions
-                .problems()
+                .problems
                 .iter()
                 .map(|problem| text(source, problem.range))
                 .collect::<Vec<_>>(),
@@ -530,8 +518,8 @@ def separated():
             separated.definition(&model),
             SuppressionCode::UnsupportedFunction
         ));
-        assert_eq!(suppressions.function().len(), 1);
-        assert_eq!(suppressions.function()[0].function, decorated.range);
+        assert_eq!(suppressions.function.len(), 1);
+        assert_eq!(suppressions.function[0].function, decorated.range);
     }
 
     #[test]
@@ -576,6 +564,6 @@ if condition:
             suppressions
                 .suppresses_statement(nested.body[0].range(), SuppressionCode::UnsupportedFunction)
         );
-        assert_eq!(suppressions.statement().len(), 3);
+        assert_eq!(suppressions.statement.len(), 3);
     }
 }

@@ -40,23 +40,9 @@ pub(crate) struct CallFact<'db> {
 /// Compact Chalk-specific semantic facts extracted from one Python file.
 #[derive(Debug, Eq, PartialEq, salsa::Update, get_size2::GetSize)]
 pub(crate) struct FileFacts<'db> {
-    resolver_roots: Box<[ResolverRootFact<'db>]>,
-    calls: Box<[CallFact<'db>]>,
-    suppression_problems: Box<[SuppressionProblem]>,
-}
-
-impl<'db> FileFacts<'db> {
-    pub(crate) fn resolver_roots(&self) -> &[ResolverRootFact<'db>] {
-        &self.resolver_roots
-    }
-
-    pub(crate) fn calls(&self) -> &[CallFact<'db>] {
-        &self.calls
-    }
-
-    pub(crate) fn suppression_problems(&self) -> &[SuppressionProblem] {
-        &self.suppression_problems
-    }
+    pub(crate) resolver_roots: Box<[ResolverRootFact<'db>]>,
+    pub(crate) calls: Box<[CallFact<'db>]>,
+    pub(crate) suppression_problems: Box<[SuppressionProblem]>,
 }
 
 /// Extracts source-ordered Chalk facts without retaining AST nodes or general native types.
@@ -77,7 +63,7 @@ fn extract_file_facts(db: &dyn Db, file: File) -> FileFacts<'_> {
     FileFacts {
         resolver_roots: visitor.resolver_roots.into_boxed_slice(),
         calls: visitor.calls.into_boxed_slice(),
-        suppression_problems: suppressions.problems().into(),
+        suppression_problems: suppressions.problems.into(),
     }
 }
 
@@ -149,9 +135,9 @@ impl<'a, 'db> FactVisitor<'a, 'db> {
                         .chalk_decorator_definition_origin(*definition)
                         .is_some_and(|origin| {
                             is_baked_resolver_origin(
-                                origin.ownership_origin(),
-                                origin.module_name(),
-                                origin.symbol_name(),
+                                origin.ownership_origin,
+                                origin.module.as_ref(),
+                                origin.symbol.as_str(),
                             )
                         })
                 })
@@ -160,9 +146,9 @@ impl<'a, 'db> FactVisitor<'a, 'db> {
                 && !provenance.modules.is_empty()
                 && provenance.modules.iter().all(|origin| {
                     is_baked_resolver_origin(
-                        origin.ownership_origin(),
-                        origin.module_name(),
-                        origin.symbol_name(),
+                        origin.ownership_origin,
+                        origin.module.as_ref(),
+                        origin.symbol.as_str(),
                     )
                 })
         }
@@ -170,7 +156,7 @@ impl<'a, 'db> FactVisitor<'a, 'db> {
 
     fn function_suppression(&self, definition: Definition<'db>) -> Option<TextRange> {
         self.suppressions
-            .function()
+            .function
             .iter()
             .find(|suppression| {
                 suppression.definition == definition
@@ -181,7 +167,7 @@ impl<'a, 'db> FactVisitor<'a, 'db> {
 
     fn statement_suppression(&self, statement: TextRange) -> Option<TextRange> {
         self.suppressions
-            .statement()
+            .statement
             .iter()
             .find(|suppression| {
                 suppression.statement == statement
@@ -506,7 +492,7 @@ def mixed_unresolved(): pass
         );
         let facts = extract_file_facts(&db, file);
         let names = facts
-            .resolver_roots()
+            .resolver_roots
             .iter()
             .map(|root| root.definition.name(&db).unwrap())
             .collect::<Vec<_>>();
@@ -542,7 +528,7 @@ def root(): pass
 
         let facts = extract_file_facts(&db, file);
         assert_eq!(
-            facts.resolver_roots()[0].definition.name(&db).as_deref(),
+            facts.resolver_roots[0].definition.name(&db).as_deref(),
             Some("root")
         );
     }
@@ -579,7 +565,7 @@ def root(): pass
             let (db, file) =
                 setup_with_search_paths(source, source_files, site_package_files, extra_files);
             assert!(
-                extract_file_facts(&db, file).resolver_roots().is_empty(),
+                extract_file_facts(&db, file).resolver_roots.is_empty(),
                 "{label}"
             );
         }
@@ -608,7 +594,7 @@ def root(): pass
         let facts = extract_file_facts(&db, file);
 
         assert_eq!(
-            facts.resolver_roots()[0].definition.name(&db).as_deref(),
+            facts.resolver_roots[0].definition.name(&db).as_deref(),
             Some("root")
         );
     }
@@ -645,7 +631,7 @@ def decorated():
         let (db, file) = setup(source, &[]);
         let facts = extract_file_facts(&db, file);
         let calls = facts
-            .calls()
+            .calls
             .iter()
             .map(|call| call.caller.name(&db).unwrap())
             .collect::<Vec<_>>();
@@ -697,7 +683,7 @@ def caller(condition, unknown, instance: Methods, conditional: Conditional):
         let (db, file) = setup(source, &[("/src/targets.py", "def imported(): pass\n")]);
         let facts = extract_file_facts(&db, file);
         let source = source_text(&db, file);
-        let calls = facts.calls();
+        let calls = facts.calls;
         let target_names = calls[0]
             .targets
             .iter()
@@ -783,7 +769,7 @@ def outer(local: Local, dynamic):
             &[("/src/opaque.py", "def decorate(value): return value\n")],
         );
         let facts = extract_file_facts(&db, file);
-        let calls = facts.calls();
+        let calls = facts.calls;
 
         assert_eq!(calls.len(), 5);
         assert_eq!(
@@ -821,9 +807,9 @@ top_level = 1  # chalk: ignore[future-code]
         let (db, file) = setup(source, &[]);
         let facts = extract_file_facts(&db, file);
         let source = source_text(&db, file);
-        let root = &facts.resolver_roots()[0];
-        let root_call = &facts.calls()[0];
-        let nested_call = &facts.calls()[1];
+        let root = &facts.resolver_roots[0];
+        let root_call = &facts.calls[0];
+        let nested_call = &facts.calls[1];
 
         assert_eq!(root.definition.name(&db).as_deref(), Some("root"));
         assert_eq!(
@@ -851,9 +837,9 @@ top_level = 1  # chalk: ignore[future-code]
                 .unsupported_function_caller_suppression
                 .is_none()
         );
-        assert_eq!(facts.suppression_problems().len(), 1);
+        assert_eq!(facts.suppression_problems.len(), 1);
         assert_eq!(
-            text(&source, facts.suppression_problems()[0].range),
+            text(&source, facts.suppression_problems[0].range),
             "future-code"
         );
     }

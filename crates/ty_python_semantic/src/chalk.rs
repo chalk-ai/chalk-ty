@@ -245,97 +245,41 @@ pub fn module_ownership_origin(
 /// This is independent of whether native inference can materialize a callable [`Definition`].
 #[derive(Clone, Debug, Eq, Hash, PartialEq, salsa::Update, get_size2::GetSize)]
 pub struct CallModuleProvenance {
-    module: Box<str>,
-    symbol: Name,
-    origin: ModuleOrigin,
-    ownership_origin: ModuleOrigin,
-    receiver_parameter: Option<u32>,
-}
-
-impl CallModuleProvenance {
-    pub fn module_name(&self) -> &str {
-        &self.module
-    }
-
-    pub fn symbol_name(&self) -> &str {
-        self.symbol.as_str()
-    }
-
+    /// The normalized absolute module name.
+    pub module: Box<str>,
+    /// The symbol name in the originating module, before any local alias.
+    pub symbol: Name,
     /// The typing-resolved module's origin.
-    pub const fn origin(&self) -> ModuleOrigin {
-        self.origin
-    }
-
+    pub origin: ModuleOrigin,
     /// The runtime module's origin, retaining canonical vendored typing stubs as a fallback.
-    pub const fn ownership_origin(&self) -> ModuleOrigin {
-        self.ownership_origin
-    }
-
-    pub const fn receiver_parameter(&self) -> Option<u32> {
-        self.receiver_parameter
-    }
+    pub ownership_origin: ModuleOrigin,
+    pub receiver_parameter: Option<u32>,
 }
 
 /// Semantically established module provenance for a decorator symbol.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecoratorModuleProvenance {
-    module: ModuleName,
-    symbol: Name,
-    origin: ModuleOrigin,
-    ownership_origin: ModuleOrigin,
-}
-
-impl DecoratorModuleProvenance {
     /// The normalized absolute module name.
-    pub fn module_name(&self) -> &str {
-        self.module.as_ref()
-    }
-
+    pub module: ModuleName,
     /// The symbol name in the originating module, before any local alias.
-    pub fn symbol_name(&self) -> &str {
-        self.symbol.as_str()
-    }
-
+    pub symbol: Name,
     /// The typing definition's module origin.
-    pub const fn origin(&self) -> ModuleOrigin {
-        self.origin
-    }
-
+    pub origin: ModuleOrigin,
     /// The runtime module's origin, retaining canonical vendored typing stubs as a fallback.
-    pub const fn ownership_origin(&self) -> ModuleOrigin {
-        self.ownership_origin
-    }
+    pub ownership_origin: ModuleOrigin,
 }
 
 /// The defining module and symbol of a resolved decorator function.
 #[derive(Clone, Debug, Eq, PartialEq, salsa::Update, get_size2::GetSize)]
 pub struct FunctionDefinitionOrigin {
-    module: Box<str>,
-    symbol: Name,
-    origin: ModuleOrigin,
-    ownership_origin: ModuleOrigin,
-}
-
-impl FunctionDefinitionOrigin {
     /// The normalized absolute name of the module containing the definition.
-    pub fn module_name(&self) -> &str {
-        &self.module
-    }
-
+    pub module: Box<str>,
     /// The name of the top-level function in its defining module.
-    pub fn symbol_name(&self) -> &str {
-        self.symbol.as_str()
-    }
-
+    pub symbol: Name,
     /// The typing definition's module origin.
-    pub const fn origin(&self) -> ModuleOrigin {
-        self.origin
-    }
-
+    pub origin: ModuleOrigin,
     /// The runtime module's origin, retaining canonical vendored typing stubs as a fallback.
-    pub const fn ownership_origin(&self) -> ModuleOrigin {
-        self.ownership_origin
-    }
+    pub ownership_origin: ModuleOrigin,
 }
 
 pub type DecoratorDefinitionOrigin = FunctionDefinitionOrigin;
@@ -352,48 +296,25 @@ pub enum CallDefinitionOriginKind {
 /// The defining module, symbol, and scope kind of a resolved call definition.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, salsa::Update, get_size2::GetSize)]
 pub struct CallDefinitionOrigin {
-    module: Box<str>,
-    symbol: Name,
-    qualified_symbol: Box<str>,
+    /// The normalized absolute name of the defining module.
+    pub module: Box<str>,
+    /// The symbol name at the definition.
+    pub symbol: Name,
+    /// The definition's qualified symbol, excluding its module.
+    pub qualified_symbol: Box<str>,
     definition_file: File,
     definition_range: TextRange,
-    kind: CallDefinitionOriginKind,
-    origin: ModuleOrigin,
-    ownership_origin: ModuleOrigin,
+    pub kind: CallDefinitionOriginKind,
+    /// The typing-resolved module's origin.
+    pub origin: ModuleOrigin,
+    /// The runtime module's origin, retaining canonical vendored typing stubs as a fallback.
+    pub ownership_origin: ModuleOrigin,
 }
 
 impl CallDefinitionOrigin {
-    /// The normalized absolute name of the defining module.
-    pub fn module_name(&self) -> &str {
-        &self.module
-    }
-
-    /// The symbol name at the definition.
-    pub fn symbol_name(&self) -> &str {
-        self.symbol.as_str()
-    }
-
-    /// The definition's qualified symbol, excluding its module.
-    pub fn qualified_symbol(&self) -> &str {
-        &self.qualified_symbol
-    }
-
     /// The exact range of the definition's name.
     pub const fn definition_range(&self) -> FileRange {
         FileRange::new(self.definition_file, self.definition_range)
-    }
-
-    pub const fn kind(&self) -> CallDefinitionOriginKind {
-        self.kind
-    }
-
-    pub const fn origin(&self) -> ModuleOrigin {
-        self.origin
-    }
-
-    /// The runtime module's origin, retaining canonical vendored typing stubs as a fallback.
-    pub const fn ownership_origin(&self) -> ModuleOrigin {
-        self.ownership_origin
     }
 }
 
@@ -1176,8 +1097,8 @@ mod tests {
         ] {
             let target = model.chalk_call_targets(&call(&db, file, index)).targets[0];
             let origin = super::chalk_call_definition_origin(&db, target.definition).unwrap();
-            assert_eq!(origin.module_name(), "origins");
-            assert_eq!(origin.qualified_symbol(), qualified_symbol);
+            assert_eq!(origin.module.as_ref(), "origins");
+            assert_eq!(origin.qualified_symbol.as_ref(), qualified_symbol);
             assert_eq!(origin.definition_range().file(), origin_file);
             assert_eq!(origin.definition_range().range(), range);
         }
@@ -1199,7 +1120,7 @@ mod tests {
         let origin_model = SemanticModel::new(&db, origin_file);
         let target = origin_model.chalk_call_targets(inner_call).targets[0];
         let origin = super::chalk_call_definition_origin(&db, target.definition).unwrap();
-        assert_eq!(origin.qualified_symbol(), "outer.<locals>.inner");
+        assert_eq!(origin.qualified_symbol.as_ref(), "outer.<locals>.inner");
         assert_eq!(
             origin.definition_range().range(),
             TextRange::new(TextSize::new(75), TextSize::new(80))
@@ -1245,11 +1166,11 @@ external_missing()
             let [provenance] = provenance.as_ref() else {
                 panic!("call {index}: expected one provenance result, got {provenance:#?}");
             };
-            assert_eq!(provenance.module_name(), module);
-            assert_eq!(provenance.symbol_name(), "missing");
-            assert_eq!(provenance.origin(), ModuleOrigin::ThirdParty);
-            assert_eq!(provenance.ownership_origin(), ModuleOrigin::ThirdParty);
-            assert_eq!(provenance.receiver_parameter(), receiver_parameter);
+            assert_eq!(provenance.module.as_ref(), module);
+            assert_eq!(provenance.symbol.as_str(), "missing");
+            assert_eq!(provenance.origin, ModuleOrigin::ThirdParty);
+            assert_eq!(provenance.ownership_origin, ModuleOrigin::ThirdParty);
+            assert_eq!(provenance.receiver_parameter, receiver_parameter);
         }
         assert!(
             model
@@ -1285,9 +1206,9 @@ module.missing()
             let [provenance] = provenance.as_ref() else {
                 panic!("call {index}: expected one provenance result, got {provenance:#?}");
             };
-            assert_eq!(provenance.module_name(), "chalk.dynamic");
-            assert_eq!(provenance.origin(), ModuleOrigin::Extra);
-            assert_eq!(provenance.ownership_origin(), ModuleOrigin::ThirdParty);
+            assert_eq!(provenance.module.as_ref(), "chalk.dynamic");
+            assert_eq!(provenance.origin, ModuleOrigin::Extra);
+            assert_eq!(provenance.ownership_origin, ModuleOrigin::ThirdParty);
         }
     }
 

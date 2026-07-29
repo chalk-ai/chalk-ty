@@ -246,23 +246,27 @@ impl<'db> Matcher<'db> {
     fn classify_module_provenance<'a>(
         provenance: &CallModuleProvenance,
     ) -> ClassifiedCall<'a, 'db> {
-        if !is_chalk_namespace(provenance.module_name()) {
+        if !is_chalk_namespace(provenance.module.as_ref()) {
             return ClassifiedCall::Deferred;
         }
-        if provenance.ownership_origin() != ModuleOrigin::ThirdParty {
+        if provenance.ownership_origin != ModuleOrigin::ThirdParty {
             return ClassifiedCall::Deferred;
         }
         ClassifiedCall::Blanket(CallMatchTarget {
             identity: CallMatchIdentity::ModuleSymbol {
-                module: provenance.module_name().into(),
-                symbol: Name::new(provenance.symbol_name()),
+                module: provenance.module.as_ref().into(),
+                symbol: Name::new(provenance.symbol.as_str()),
             },
             kind: CallKind::Method,
-            name: Name::new(provenance.symbol_name()),
-            display_label: format!("{}.{}", provenance.module_name(), provenance.symbol_name())
-                .into(),
+            name: Name::new(provenance.symbol.as_str()),
+            display_label: format!(
+                "{}.{}",
+                provenance.module.as_ref(),
+                provenance.symbol.as_str()
+            )
+            .into(),
             definition_range: None,
-            receiver_parameter: provenance.receiver_parameter(),
+            receiver_parameter: provenance.receiver_parameter,
         })
     }
 
@@ -275,40 +279,40 @@ impl<'db> Matcher<'db> {
             return ClassifiedCall::Deferred;
         };
         let identity = CallMatchIdentity::Definition(target.definition);
-        let display_label: Box<str> = if origin.module_name().is_empty() {
-            origin.qualified_symbol().into()
+        let display_label: Box<str> = if origin.module.is_empty() {
+            origin.qualified_symbol.as_ref().into()
         } else {
-            format!("{}.{}", origin.module_name(), origin.qualified_symbol()).into()
+            format!("{}.{}", origin.module, origin.qualified_symbol).into()
         };
         let definition_range = Some(origin.definition_range());
 
-        if origin.ownership_origin() == ModuleOrigin::ThirdParty
-            && is_chalk_namespace(origin.module_name())
+        if origin.ownership_origin == ModuleOrigin::ThirdParty
+            && is_chalk_namespace(origin.module.as_ref())
         {
             return ClassifiedCall::Blanket(CallMatchTarget {
                 identity,
                 kind: CallKind::Method,
-                name: Name::new(origin.symbol_name()),
+                name: Name::new(origin.symbol.as_str()),
                 display_label,
                 definition_range,
-                receiver_parameter: (origin.kind() == CallDefinitionOriginKind::Method
+                receiver_parameter: (origin.kind == CallDefinitionOriginKind::Method
                     && call.receiver.is_some())
                 .then_some(0),
             });
         }
 
-        if origin.kind() == CallDefinitionOriginKind::ClassConstructor {
-            if origin.ownership_origin() != ModuleOrigin::StandardLibrary
-                || origin.module_name() != "builtins"
+        if origin.kind == CallDefinitionOriginKind::ClassConstructor {
+            if origin.ownership_origin != ModuleOrigin::StandardLibrary
+                || origin.module.as_ref() != "builtins"
             {
                 return ClassifiedCall::Deferred;
             }
-            let protocol = protocol_operation(origin.symbol_name());
+            let protocol = protocol_operation(origin.symbol.as_str());
             return ClassifiedCall::Registry {
                 target: CallMatchTarget {
                     identity,
                     kind: CallKind::Builtin,
-                    name: Name::new(origin.symbol_name()),
+                    name: Name::new(origin.symbol.as_str()),
                     display_label,
                     definition_range,
                     receiver_parameter: None,
@@ -323,7 +327,7 @@ impl<'db> Matcher<'db> {
             };
         }
 
-        let kind = origin.kind();
+        let kind = origin.kind;
         if kind == CallDefinitionOriginKind::NestedFunction {
             return ClassifiedCall::Deferred;
         }
@@ -331,11 +335,11 @@ impl<'db> Matcher<'db> {
             return ClassifiedCall::Deferred;
         }
 
-        let is_builtin = origin.ownership_origin() == ModuleOrigin::StandardLibrary
-            && origin.module_name() == "builtins"
+        let is_builtin = origin.ownership_origin == ModuleOrigin::StandardLibrary
+            && origin.module.as_ref() == "builtins"
             && kind == CallDefinitionOriginKind::TopLevelFunction;
         let protocol = is_builtin
-            .then(|| protocol_operation(origin.symbol_name()))
+            .then(|| protocol_operation(origin.symbol.as_str()))
             .flatten();
         let target = CallMatchTarget {
             identity,
@@ -344,20 +348,20 @@ impl<'db> Matcher<'db> {
             } else {
                 CallKind::Builtin
             },
-            name: Name::new(origin.symbol_name()),
+            name: Name::new(origin.symbol.as_str()),
             display_label,
             definition_range,
             receiver_parameter: (!is_builtin).then_some(0),
         };
 
         if matches!(
-            origin.ownership_origin(),
+            origin.ownership_origin,
             ModuleOrigin::FirstParty | ModuleOrigin::Extra | ModuleOrigin::Other
         ) {
             return ClassifiedCall::MissingRegistryEntry(target);
         }
         if !matches!(
-            origin.ownership_origin(),
+            origin.ownership_origin,
             ModuleOrigin::StandardLibrary | ModuleOrigin::ThirdParty
         ) {
             return ClassifiedCall::Deferred;
@@ -368,8 +372,8 @@ impl<'db> Matcher<'db> {
             let receiver = match (kind, call.receiver) {
                 (_, Some(receiver)) => ActualType::Native(receiver),
                 (CallDefinitionOriginKind::TopLevelFunction, None) => ActualType::SyntheticModule {
-                    name: origin.module_name(),
-                    origin: origin.ownership_origin(),
+                    name: origin.module.as_ref(),
+                    origin: origin.ownership_origin,
                 },
                 _ => return ClassifiedCall::Deferred,
             };

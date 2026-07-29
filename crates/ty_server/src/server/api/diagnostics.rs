@@ -70,7 +70,7 @@ impl Diagnostics {
         // Hash the primary source conservatively so edits that only change its line index cannot
         // leave a stale result ID.
         for diagnostic in chalk_diagnostics {
-            let file = diagnostic.file();
+            let file = diagnostic.file;
             if hashed_files.insert(file) {
                 source_text(db, file).as_str().hash(&mut hasher);
             }
@@ -82,9 +82,9 @@ impl Diagnostics {
             for target in chalk_diagnostics
                 .iter()
                 .filter_map(ChalkDiagnostic::unsupported_function_details)
-                .flat_map(ty_chalk::UnsupportedFunctionDetails::targets)
+                .flat_map(|details| details.targets.iter())
             {
-                let Some(location) = target.location() else {
+                let Some(location) = target.location else {
                     continue;
                 };
                 let file = location.file();
@@ -468,8 +468,8 @@ pub(super) fn chalk_diagnostic_to_lsp(
     client_capabilities: ResolvedClientCapabilities,
 ) -> Option<Diagnostic> {
     let source_range = diagnostic
-        .range()
-        .to_lsp_range(db, diagnostic.file(), encoding)?;
+        .range
+        .to_lsp_range(db, diagnostic.file, encoding)?;
     let source_location = source_range.to_location();
     let mut message = diagnostic.message().into_owned();
     let mut related_information = None;
@@ -477,23 +477,23 @@ pub(super) fn chalk_diagnostic_to_lsp(
     if let Some(details) = diagnostic.unsupported_function_details() {
         let mut detail_items = Vec::new();
 
-        for target in details.targets() {
-            let detail = match target.reason() {
+        for target in &details.targets {
+            let detail = match target.reason {
                 CallNoMatchReason::MissingRegistryEntry => {
                     format!(
                         "Target `{}`: no static-accelerator registry entry",
-                        target.label()
+                        target.label
                     )
                 }
                 CallNoMatchReason::SignatureMismatch => {
                     format!(
                         "Target `{}`: arguments do not match a registered signature",
-                        target.label()
+                        target.label
                     )
                 }
             };
             let location = target
-                .location()
+                .location
                 .and_then(|range| range.to_lsp_range(db, encoding)?.into_location())
                 .or_else(|| source_location.clone());
             detail_items.push((location, detail));
@@ -505,7 +505,7 @@ pub(super) fn chalk_diagnostic_to_lsp(
                 format!("Observed call: {observed_call}"),
             ));
         }
-        for signature in details.supported_signatures() {
+        for signature in &details.supported_signatures {
             let detail = if signature.starts_with("... [") {
                 signature.to_string()
             } else {

@@ -28,19 +28,11 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
 /// A Chalk project selected by the nearest `chalk.yml` or `chalk.yaml`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChalkProject {
-    root: SystemPathBuf,
-    config_path: SystemPathBuf,
+    pub root: SystemPathBuf,
+    pub config_path: SystemPathBuf,
 }
 
 impl ChalkProject {
-    pub fn root(&self) -> &SystemPath {
-        &self.root
-    }
-
-    pub fn config_path(&self) -> &SystemPath {
-        &self.config_path
-    }
-
     /// Recomputes and returns the project's apply/import source membership.
     ///
     /// The result is sorted by path and contains Python and Chalk SQL sources.
@@ -360,7 +352,7 @@ fn fold_match(
     }
 }
 
-fn is_source_candidate(path: &SystemPath) -> bool {
+pub(crate) fn is_source_candidate(path: &SystemPath) -> bool {
     path.extension() == Some("py")
         || path
             .file_name()
@@ -428,15 +420,15 @@ mod tests {
             .unwrap();
 
         let yml = discover_chalk_project(&system, SystemPath::new("/workspace/file.py")).unwrap();
-        assert_eq!(yml.root(), SystemPath::new("/workspace"));
-        assert_eq!(yml.config_path(), SystemPath::new("/workspace/chalk.yml"));
+        assert_eq!(yml.root, SystemPath::new("/workspace"));
+        assert_eq!(yml.config_path, SystemPath::new("/workspace/chalk.yml"));
 
         let yaml =
             discover_chalk_project(&system, SystemPath::new("/workspace/nested/src/file.py"))
                 .unwrap();
-        assert_eq!(yaml.root(), SystemPath::new("/workspace/nested"));
+        assert_eq!(yaml.root, SystemPath::new("/workspace/nested"));
         assert_eq!(
-            yaml.config_path(),
+            yaml.config_path,
             SystemPath::new("/workspace/nested/chalk.yaml")
         );
 

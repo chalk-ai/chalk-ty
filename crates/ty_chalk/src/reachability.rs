@@ -62,11 +62,6 @@ impl<'db> ProjectCandidates<'db> {
         &self.cycles
     }
 
-    #[cfg(test)]
-    fn suppression_problems(&self) -> &[ProjectSuppressionProblem] {
-        &self.suppression_problems
-    }
-
     pub(crate) fn unsupported_for_file(
         &self,
         file: File,
@@ -112,13 +107,13 @@ pub(crate) fn project_candidates<'db>(
             continue;
         };
 
-        for call in facts.calls() {
+        for call in &facts.calls {
             calls
                 .entry(call.caller)
                 .or_default()
                 .push(CallSite { file, call });
         }
-        for root in facts.resolver_roots() {
+        for root in &facts.resolver_roots {
             if seen_roots.insert(root.definition) {
                 cycle_roots.push(root.definition);
                 if root.unsupported_function_suppression.is_none() {
@@ -126,7 +121,7 @@ pub(crate) fn project_candidates<'db>(
                 }
             }
         }
-        suppression_problems.extend(facts.suppression_problems().iter().map(|problem| {
+        suppression_problems.extend(facts.suppression_problems.iter().map(|problem| {
             ProjectSuppressionProblem {
                 file,
                 range: problem.range,
@@ -338,7 +333,7 @@ mod tests {
         definition: Definition<'db>,
     ) -> Box<str> {
         chalk_call_definition_origin(db, definition)
-            .map_or("", |origin| origin.qualified_symbol())
+            .map_or("", |origin| origin.qualified_symbol.as_ref())
             .into()
     }
 
@@ -348,7 +343,7 @@ mod tests {
         definition: Definition<'db>,
     ) -> Box<str> {
         chalk_function_definition_origin(db, definition)
-            .map_or("", |origin| origin.symbol_name())
+            .map_or("", |origin| origin.symbol.as_str())
             .into()
     }
 
@@ -895,10 +890,10 @@ def nested(condition):
         let diagnostics = chalk_diagnostics_for_file(&db, project, main);
         assert_eq!(diagnostics.len(), 1);
         assert!(matches!(
-            diagnostics[0].kind(),
+            &diagnostics[0].kind,
             ChalkDiagnosticKind::ResolverCycle
         ));
-        assert_eq!(text(&db, main, diagnostics[0].range()), "selected()");
+        assert_eq!(text(&db, main, diagnostics[0].range), "selected()");
     }
 
     #[test]
@@ -1156,7 +1151,7 @@ def second():
         let project = input(&db, &files, &["/main.py", "/helper.py"]);
 
         assert_eq!(
-            file_facts(&db, main).unwrap().calls()[0].targets[0]
+            file_facts(&db, main).unwrap().calls[0].targets[0]
                 .definition
                 .name(&db)
                 .as_deref(),
@@ -1177,7 +1172,7 @@ def root():
         .unwrap();
 
         assert_eq!(
-            file_facts(&db, main).unwrap().calls()[0].targets[0]
+            file_facts(&db, main).unwrap().calls[0].targets[0]
                 .definition
                 .name(&db)
                 .as_deref(),
@@ -1210,7 +1205,7 @@ def root():
         let main = files["/main.py"];
         let project = input(&db, &files, &["/main.py"]);
 
-        assert!(file_facts(&db, main).unwrap().resolver_roots().is_empty());
+        assert!(file_facts(&db, main).unwrap().resolver_roots.is_empty());
         assert!(project_candidates(&db, project).unsupported().is_empty());
         db.write_file(
             SystemPath::new("/main.py"),
@@ -1225,7 +1220,7 @@ def root():
         )
         .unwrap();
 
-        assert_eq!(file_facts(&db, main).unwrap().resolver_roots().len(), 1);
+        assert_eq!(file_facts(&db, main).unwrap().resolver_roots.len(), 1);
         assert_eq!(project_candidates(&db, project).unsupported().len(), 1);
         db.write_file(
             SystemPath::new("/main.py"),
@@ -1239,7 +1234,7 @@ def root():
         )
         .unwrap();
 
-        assert!(file_facts(&db, main).unwrap().resolver_roots().is_empty());
+        assert!(file_facts(&db, main).unwrap().resolver_roots.is_empty());
         assert!(project_candidates(&db, project).unsupported().is_empty());
     }
 
@@ -1362,7 +1357,7 @@ def unsupported():
         ]);
         let main = files["/main.py"];
 
-        let call_definition = file_facts(&db, main).unwrap().calls()[0].targets[0].definition;
+        let call_definition = file_facts(&db, main).unwrap().calls[0].targets[0].definition;
         let call_definition_id = call_definition.as_id();
         assert_eq!(
             call_origin_label(&db, call_definition).as_ref(),
@@ -1379,7 +1374,7 @@ def unsupported():
         )
         .unwrap();
 
-        let call_definition = file_facts(&db, main).unwrap().calls()[0].targets[0].definition;
+        let call_definition = file_facts(&db, main).unwrap().calls[0].targets[0].definition;
         assert_eq!(
             call_origin_label(&db, call_definition).as_ref(),
             "unsupported"
@@ -1560,9 +1555,9 @@ def helper():
 
         assert!(candidates.unsupported().is_empty());
         assert!(candidates.cycles().is_empty());
-        assert_eq!(candidates.suppression_problems().len(), 1);
+        assert_eq!(candidates.suppression_problems.len(), 1);
         assert_eq!(
-            text(&db, main, candidates.suppression_problems()[0].range),
+            text(&db, main, candidates.suppression_problems[0].range),
             "future-code"
         );
         assert_eq!(candidates.suppression_problems_for_file(main).count(), 1);

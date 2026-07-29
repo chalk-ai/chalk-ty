@@ -497,7 +497,7 @@ impl Session {
         {
             tracing::error!(
                 "Failed to refresh Chalk sources for project at `{}`: {error}",
-                chalk_project.project().root()
+                chalk_project.project().root
             );
         }
     }
@@ -1407,7 +1407,7 @@ impl Session {
         ) else {
             return;
         };
-        let routing_root = chalk_project.root().to_path_buf();
+        let routing_root = chalk_project.root.clone();
 
         if self
             .projects
@@ -1509,7 +1509,7 @@ impl Session {
         chalk_project: &ChalkProject,
         workspace_root: Option<&SystemPath>,
     ) -> Option<ProjectDatabase> {
-        let root = chalk_project.root();
+        let root = &chalk_project.root;
         let index = self.index.as_ref()?.clone();
         let system = LSPSystem::new(index, self.native_system.clone());
         let workspace_settings = workspace_root
