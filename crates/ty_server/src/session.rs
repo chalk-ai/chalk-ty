@@ -24,6 +24,7 @@ use ruff_python_ast::PySourceType;
 use ty_chalk::{ActiveChalkProject, ChalkProject, ChalkProjectInput, discover_chalk_project};
 use ty_combine::Combine;
 use ty_project::metadata::Options;
+use ty_project::metadata::options::ProjectOptionsOverrides;
 use ty_project::watch::{ChangeEvent, CreatedKind};
 use ty_project::{ChangeResult, Db as _, ProjectDatabase, ProjectMetadata};
 
@@ -463,19 +464,7 @@ impl Session {
         }
         .map(|(routing_root, _)| routing_root.clone())
         .expect("To always have at least one project");
-        let projects: Vec<_> = self
-            .projects
-            .iter()
-            .map(|(routing_root, state)| {
-                let overrides = state
-                    .workspace_root
-                    .as_ref()
-                    .and_then(|workspace_root| self.workspaces.workspaces.get(workspace_root))
-                    .and_then(|workspace| workspace.settings().project_options_overrides())
-                    .cloned();
-                (routing_root.clone(), overrides)
-            })
-            .collect();
+        let projects = self.projects_with_overrides();
 
         self.bump_revision();
 
@@ -493,10 +482,25 @@ impl Session {
         routed_result.expect("The routed project must still exist")
     }
 
+    fn projects_with_overrides(&self) -> Vec<(SystemPathBuf, Option<ProjectOptionsOverrides>)> {
+        self.projects
+            .iter()
+            .map(|(routing_root, state)| {
+                let overrides = state
+                    .workspace_root
+                    .as_ref()
+                    .and_then(|workspace_root| self.workspaces.workspaces.get(workspace_root))
+                    .and_then(|workspace| workspace.settings().project_options_overrides())
+                    .cloned();
+                (routing_root.clone(), overrides)
+            })
+            .collect()
+    }
+
     fn apply_changes_to_project(
         state: &mut ProjectState,
         changes: &[ChangeEvent],
-        overrides: Option<&ty_project::metadata::options::ProjectOptionsOverrides>,
+        overrides: Option<&ProjectOptionsOverrides>,
     ) -> ChangeResult {
         let result = state.db.apply_changes(changes, overrides);
 
@@ -522,19 +526,7 @@ impl Session {
     /// be routed back through a database's internal metadata root. A Chalk database can inherit a
     /// broader metadata root while remaining keyed by its Chalk routing root.
     pub(crate) fn apply_changes_to_all(&mut self, changes: &[ChangeEvent]) {
-        let projects: Vec<_> = self
-            .projects
-            .iter()
-            .map(|(routing_root, state)| {
-                let overrides = state
-                    .workspace_root
-                    .as_ref()
-                    .and_then(|workspace_root| self.workspaces.workspaces.get(workspace_root))
-                    .and_then(|workspace| workspace.settings().project_options_overrides())
-                    .cloned();
-                (routing_root.clone(), overrides)
-            })
-            .collect();
+        let projects = self.projects_with_overrides();
 
         self.bump_revision();
 
