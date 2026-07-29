@@ -163,7 +163,7 @@ impl BackgroundRequestHandler for WorkspaceDiagnosticRequestHandler {
             let mut project_reporter =
                 chalk::ProjectReporter::new(&mut reporter, snapshot, project, &files);
             db.check_files_with_reporter(files, &mut project_reporter);
-            project_reporter.finish();
+            project_reporter.finish(db);
         }
 
         Ok(reporter.into_final_report())

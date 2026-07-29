@@ -11,7 +11,6 @@ use crate::session::{RoutedProject, SessionSnapshot};
 /// Adds Chalk diagnostics to one routed project's ordinary workspace-diagnostic pass.
 pub(super) struct ProjectReporter<'reporter, 'snapshot> {
     reporter: &'reporter mut WorkspaceDiagnosticsProgressReporter<'snapshot>,
-    db: &'snapshot ProjectDatabase,
     chalk_project: Option<ChalkProjectInput>,
     chalk_only_files: Vec<File>,
 }
@@ -41,21 +40,20 @@ impl<'reporter, 'snapshot> ProjectReporter<'reporter, 'snapshot> {
 
         Self {
             reporter,
-            db,
             chalk_project,
             chalk_only_files,
         }
     }
 
-    pub(super) fn finish(self) {
+    pub(super) fn finish(self, db: &ProjectDatabase) {
         let Some(chalk_project) = self.chalk_project else {
             return;
         };
 
         for file in self.chalk_only_files {
-            let chalk_diagnostics = chalk_diagnostics_for_file(self.db, chalk_project, file);
+            let chalk_diagnostics = chalk_diagnostics_for_file(db, chalk_project, file);
             self.reporter
-                .report_file(self.db, file, &[], &chalk_diagnostics, &[]);
+                .report_file(db, file, &[], &chalk_diagnostics, &[]);
         }
     }
 }
