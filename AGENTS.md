@@ -5,8 +5,8 @@ This repository contains both Ruff (a Python linter and formatter) and ty (a Pyt
 ## Chalk changes must remain easy to rebase
 
 This repository is actually a fork that implements Chalk-specific features on
-top of Ruff/ty. As such, it must remain straightforward to rebase onto newer
-upstream Ruff/ty versions. Treat rebaseability as a primary architectural
+top of Ruff/ty. As such, it must remain straightforward to merge against newer
+upstream Ruff/ty versions. Treat clean mergeability as a primary architectural
 requirement for every Chalk-specific change, not as optional cleanup.
 
 - Put substantive Chalk behavior in dedicated Chalk-only crates, files, or
