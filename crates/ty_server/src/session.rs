@@ -21,7 +21,9 @@ use ruff_db::Db;
 use ruff_db::files::{File, system_path_to_file};
 use ruff_db::system::{System, SystemPath, SystemPathBuf};
 use ruff_python_ast::PySourceType;
-use ty_chalk::{ActiveChalkProject, ChalkProject, ChalkProjectInput, discover_chalk_project};
+use ty_chalk::{
+    ActiveChalkProject, ChalkProject, ChalkProjectError, ChalkProjectInput, discover_chalk_project,
+};
 use ty_combine::Combine;
 use ty_project::metadata::Options;
 use ty_project::metadata::options::ProjectOptionsOverrides;
@@ -1414,39 +1416,51 @@ impl Session {
             return;
         }
 
-        let workspace_root = self.workspaces.root_for_path(system_path).cloned();
         let migrated_documents = self.open_documents_migrating_to(&routing_root);
+        if let Some(state) = self.projects.get_mut(&routing_root)
+            && state.kind() == ProjectKind::Workspace
+        {
+            let active_project = match Self::activate_chalk_project(
+                &mut state.db,
+                chalk_project,
+                &migrated_documents,
+            ) {
+                Ok(active_project) => active_project,
+                Err(error) => {
+                    tracing::error!(
+                        "Failed to collect Chalk sources for project at `{routing_root}`: {error}"
+                    );
+                    return;
+                }
+            };
+            state.kind = ProjectKind::Chalk;
+            state.chalk_project = Some(active_project);
+            self.file_watcher_registration_needs_refresh = true;
+            return;
+        }
+
+        let workspace_root = self.workspaces.root_for_path(system_path).cloned();
         let Some(mut db) =
             self.create_chalk_project_database(&chalk_project, workspace_root.as_deref())
         else {
             return;
-        };
-        let mut chalk_project = match ActiveChalkProject::new(&db, chalk_project) {
-            Ok(chalk_project) => chalk_project,
-            Err(error) => {
-                tracing::error!(
-                    "Failed to collect Chalk sources for project at `{routing_root}`: {error}"
-                );
-                return;
-            }
         };
 
         for (_, migrated_document, is_python) in &migrated_documents {
             if *is_python && migrated_document.key() != document.key() {
                 Self::open_document_in_project(&mut db, migrated_document);
             }
-            if let AnySystemPath::System(path) = migrated_document.notebook_or_file_path()
-                && let Ok(file) = system_path_to_file(&db, path)
-            {
-                chalk_project.open_source(&db, file);
-            }
         }
-        if let Err(error) = chalk_project.refresh(&mut db) {
-            tracing::error!(
-                "Failed to collect open Chalk sources for project at `{routing_root}`: {error}"
-            );
-            return;
-        }
+        let chalk_project =
+            match Self::activate_chalk_project(&mut db, chalk_project, &migrated_documents) {
+                Ok(chalk_project) => chalk_project,
+                Err(error) => {
+                    tracing::error!(
+                        "Failed to collect Chalk sources for project at `{routing_root}`: {error}"
+                    );
+                    return;
+                }
+            };
 
         for (old_routing_root, migrated_document, is_python) in &migrated_documents {
             if *is_python && let Some(state) = self.projects.get_mut(old_routing_root) {
@@ -1470,6 +1484,23 @@ impl Session {
             },
         );
         self.file_watcher_registration_needs_refresh = true;
+    }
+
+    fn activate_chalk_project(
+        db: &mut ProjectDatabase,
+        chalk_project: ChalkProject,
+        documents: &[(SystemPathBuf, DocumentHandle, bool)],
+    ) -> Result<ActiveChalkProject, ChalkProjectError> {
+        let mut chalk_project = ActiveChalkProject::new(db, chalk_project)?;
+        for (_, document, _) in documents {
+            if let AnySystemPath::System(path) = document.notebook_or_file_path()
+                && let Ok(file) = system_path_to_file(db, path)
+            {
+                chalk_project.open_source(db, file);
+            }
+        }
+        chalk_project.refresh(db)?;
+        Ok(chalk_project)
     }
 
     fn create_chalk_project_database(
