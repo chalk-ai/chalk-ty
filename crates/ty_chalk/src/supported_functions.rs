@@ -268,3 +268,70 @@ static CURRENT_SUPPORTED_FUNCS: OnceLock<SupportedFuncs> = OnceLock::new();
 pub(crate) fn current_supported_functions() -> &'static SupportedFuncs {
     CURRENT_SUPPORTED_FUNCS.get_or_init(current_snapshot::supported_funcs)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_snapshot_counts() {
+        let funcs = current_supported_functions();
+        assert_eq!(funcs.len(), 306);
+        assert_eq!(
+            funcs
+                .entries()
+                .map(|(_, signatures)| signatures.len())
+                .sum::<usize>(),
+            884
+        );
+    }
+
+    #[test]
+    fn current_snapshot_representative_metadata() {
+        let funcs = current_supported_functions();
+
+        let len = funcs.signatures(CallKind::Builtin, "len").unwrap();
+        assert!(matches!(
+            len[0].args(),
+            [SupportedArg {
+                ty: SupportedTy::Any { nullable: true },
+                argument_name: None,
+                has_default: false,
+            }]
+        ));
+
+        let md5 = funcs.signatures(CallKind::Method, "md5").unwrap();
+        let used_for_security = &md5[0].args()[2];
+        assert_eq!(used_for_security.argument_name(), Some("usedforsecurity"));
+        assert!(used_for_security.has_default());
+
+        let value = funcs.signatures(CallKind::Attribute, "value").unwrap();
+        assert!(matches!(
+            value[0].args(),
+            [SupportedArg {
+                ty: SupportedTy::SubClassOf {
+                    ty_name,
+                    match_nullable: false,
+                },
+                ..
+            }] if ty_name == "TyEnum"
+        ));
+
+        let eq = funcs.signatures(CallKind::Method, "__eq__").unwrap();
+        assert!(eq.iter().any(|signature| {
+            matches!(
+                signature.args(),
+                [
+                    SupportedArg {
+                        ty: SupportedTy::Int { nullable: true },
+                        ..
+                    },
+                    SupportedArg {
+                        ty: SupportedTy::Int { nullable: true },
+                        ..
+                    },
+                ]
+            )
+        }));
+    }
+}
