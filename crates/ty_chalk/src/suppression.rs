@@ -402,3 +402,190 @@ impl Lines {
         self.starts[line]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use ruff_db::files::system_path_to_file;
+    use ruff_db::parsed::parsed_module;
+    use ruff_db::system::{DbWithWritableSystem as _, SystemPath, SystemPathBuf};
+    use ruff_text_size::{Ranged, TextRange};
+    use ty_project::{ProjectMetadata, TestDb};
+    use ty_python_semantic::{HasDefinition, SemanticModel};
+
+    use super::{
+        InvalidSuppressionReason, SuppressionCode, SuppressionProblemKind, extract_suppressions,
+    };
+
+    fn setup(source: &str) -> (TestDb, ruff_db::files::File) {
+        let project = ProjectMetadata::new("test", SystemPathBuf::from("/"));
+        let mut db = TestDb::new(project);
+        db.init_program().unwrap();
+        db.write_file(SystemPath::new("/test.py"), source).unwrap();
+        let file = system_path_to_file(&db, "/test.py").unwrap();
+        (db, file)
+    }
+
+    fn text(source: &str, range: TextRange) -> &str {
+        &source[usize::from(range.start())..usize::from(range.end())]
+    }
+
+    #[test]
+    fn parses_known_unknown_mixed_and_isolates_other_ignore_syntaxes() {
+        let source = "\
+x = 1  # chalk: ignore[unsupported-function]
+y = 2  # chalk: ignore[resolver-cycle]
+z = 3  # chalk: ignore[unsupported-function, resolver-cycle, future-code]
+a = 4  # ty: ignore[unsupported-function]
+b = 5  # type: ignore[unsupported-function]
+";
+        let (db, file) = setup(source);
+        let suppressions = extract_suppressions(&db, file);
+        let parsed = parsed_module(&db, file).load(&db);
+
+        assert!(suppressions.suppresses_statement(
+            parsed.syntax().body[0].range(),
+            SuppressionCode::UnsupportedFunction
+        ));
+        assert!(!suppressions.suppresses_statement(
+            parsed.syntax().body[1].range(),
+            SuppressionCode::UnsupportedFunction
+        ));
+        assert!(suppressions.suppresses_statement(
+            parsed.syntax().body[2].range(),
+            SuppressionCode::UnsupportedFunction
+        ));
+        assert_eq!(suppressions.statement().len(), 2);
+
+        let unknown = suppressions
+            .problems()
+            .iter()
+            .filter(|problem| problem.kind == SuppressionProblemKind::UnknownCode)
+            .map(|problem| text(source, problem.range))
+            .collect::<Vec<_>>();
+        assert_eq!(unknown, ["resolver-cycle", "resolver-cycle", "future-code"]);
+    }
+
+    #[test]
+    fn blanket_empty_and_malformed_directives_suppress_nothing() {
+        let source = "\
+x = 1  # chalk: ignore
+y = 2  # chalk: ignore[]
+z = 3  # chalk: ignore[unsupported-function
+a = 4  # chalk: ignore[unsupported-function,]
+b = 5  # chalk: ignore[unsupported-function] trailing
+";
+        let (db, file) = setup(source);
+        let suppressions = extract_suppressions(&db, file);
+
+        assert!(suppressions.statement().is_empty());
+        assert_eq!(
+            suppressions
+                .problems()
+                .iter()
+                .map(|problem| problem.kind)
+                .collect::<Vec<_>>(),
+            [
+                SuppressionProblemKind::Invalid(InvalidSuppressionReason::Blanket),
+                SuppressionProblemKind::Invalid(InvalidSuppressionReason::EmptyCodeList),
+                SuppressionProblemKind::Invalid(InvalidSuppressionReason::MissingClosingBracket),
+                SuppressionProblemKind::Invalid(InvalidSuppressionReason::MalformedCodeList),
+                SuppressionProblemKind::Invalid(InvalidSuppressionReason::TrailingContent),
+            ]
+        );
+        assert_eq!(
+            suppressions
+                .problems()
+                .iter()
+                .map(|problem| text(source, problem.range))
+                .collect::<Vec<_>>(),
+            ["ignore", "[]", "[unsupported-function", ",", "trailing"]
+        );
+    }
+
+    #[test]
+    fn function_directives_attach_across_decorators_but_not_blank_lines_or_nested_scopes() {
+        let source = "\
+# chalk: ignore[unsupported-function]
+@first
+@second
+def decorated():
+    def nested():
+        pass
+
+# chalk: ignore[unsupported-function]
+
+def separated():
+    pass
+";
+        let (db, file) = setup(source);
+        let suppressions = extract_suppressions(&db, file);
+        let parsed = parsed_module(&db, file).load(&db);
+        let model = SemanticModel::new(&db, file);
+        let decorated = parsed.syntax().body[0].as_function_def_stmt().unwrap();
+        let nested = decorated.body[0].as_function_def_stmt().unwrap();
+        let separated = parsed.syntax().body[1].as_function_def_stmt().unwrap();
+
+        assert!(suppressions.suppresses_function(
+            decorated.definition(&model),
+            SuppressionCode::UnsupportedFunction
+        ));
+        assert!(
+            suppressions
+                .suppresses_function_range(decorated.range, SuppressionCode::UnsupportedFunction)
+        );
+        assert!(!suppressions.suppresses_function(
+            nested.definition(&model),
+            SuppressionCode::UnsupportedFunction
+        ));
+        assert!(!suppressions.suppresses_function(
+            separated.definition(&model),
+            SuppressionCode::UnsupportedFunction
+        ));
+        assert_eq!(suppressions.function().len(), 1);
+    }
+
+    #[test]
+    fn statement_directives_accept_start_or_end_lines_but_not_interior_lines() {
+        let source = "\
+start = call(  # chalk: ignore[unsupported-function]
+    value,
+)
+end = call(
+    value,
+)  # chalk: ignore[unsupported-function]
+interior = call(
+    value,  # chalk: ignore[unsupported-function]
+)
+if condition:
+    nested = call(
+        value,
+    )  # chalk: ignore[unsupported-function]
+";
+        let (db, file) = setup(source);
+        let suppressions = extract_suppressions(&db, file);
+        let parsed = parsed_module(&db, file).load(&db);
+
+        assert!(suppressions.suppresses_statement(
+            parsed.syntax().body[0].range(),
+            SuppressionCode::UnsupportedFunction
+        ));
+        assert!(suppressions.suppresses_statement(
+            parsed.syntax().body[1].range(),
+            SuppressionCode::UnsupportedFunction
+        ));
+        assert!(!suppressions.suppresses_statement(
+            parsed.syntax().body[2].range(),
+            SuppressionCode::UnsupportedFunction
+        ));
+        let nested = parsed.syntax().body[3].as_if_stmt().unwrap();
+        assert!(
+            !suppressions
+                .suppresses_statement(nested.range(), SuppressionCode::UnsupportedFunction)
+        );
+        assert!(
+            suppressions
+                .suppresses_statement(nested.body[0].range(), SuppressionCode::UnsupportedFunction)
+        );
+        assert_eq!(suppressions.statement().len(), 3);
+    }
+}
