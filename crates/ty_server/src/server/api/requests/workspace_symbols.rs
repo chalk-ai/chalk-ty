@@ -1,6 +1,7 @@
 use lsp_types::WorkspaceSymbolRequest;
 use lsp_types::{WorkspaceSymbolParams, WorkspaceSymbolResponse};
-use ty_ide::{WorkspaceSymbolInfo, workspace_symbols};
+use ty_ide::{WorkspaceSymbolInfo, workspace_symbols_for_files};
+use ty_project::Db as _;
 
 use crate::server::api::symbols::convert_to_lsp_symbol_information;
 use crate::server::api::traits::{
@@ -22,13 +23,23 @@ impl BackgroundRequestHandler for WorkspaceSymbolRequestHandler {
         params: WorkspaceSymbolParams,
     ) -> crate::server::Result<Option<WorkspaceSymbolResponse>> {
         let query = &params.query;
+        if query.is_empty() {
+            return Ok(None);
+        }
+
         let mut all_symbols = Vec::new();
 
-        // Iterate through all projects in the session
-        for db in snapshot.projects() {
+        for project in snapshot.routed_projects() {
+            let db = project.db();
+            let indexed_files = db.project().files(db);
+            let files = indexed_files
+                .iter()
+                .copied()
+                .filter(|file| snapshot.project_owns_file(project, *file));
+
             // Get workspace symbols matching the query
             let start = std::time::Instant::now();
-            let workspace_symbol_infos = workspace_symbols(db, query);
+            let workspace_symbol_infos = workspace_symbols_for_files(db, query, files);
             tracing::debug!(
                 "Found {len} workspace symbols in {elapsed:?}",
                 len = workspace_symbol_infos.len(),

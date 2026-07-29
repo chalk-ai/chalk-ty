@@ -19,11 +19,9 @@ pub(crate) fn hierarchy_handler(
 ) -> Option<Vec<TypeHierarchyItem>> {
     let encoding = snapshot.position_encoding();
 
-    // We don't actually know which project the request
-    // came from, so just look for results across all
-    // projects.
     let mut items = vec![];
-    for db in snapshot.projects() {
+    for project in snapshot.routed_projects() {
+        let db = project.db();
         let Some((file, offset)) = resolve_file_uri_range(
             db,
             &requested_item.uri,
@@ -32,6 +30,9 @@ pub(crate) fn hierarchy_handler(
         ) else {
             continue;
         };
+        if !snapshot.project_owns_file(project, file) {
+            continue;
+        }
         items.extend(
             hierarchy_types(db, file, offset)
                 .into_iter()

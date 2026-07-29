@@ -30,7 +30,8 @@ impl BackgroundRequestHandler for CallHierarchyOutgoingCallsRequestHandler {
         let requested_item = &params.item;
 
         let mut calls = Vec::new();
-        for db in snapshot.projects() {
+        for project in snapshot.routed_projects() {
+            let db = project.db();
             let Some((file, offset)) = resolve_file_uri_range(
                 db,
                 &requested_item.uri,
@@ -39,6 +40,9 @@ impl BackgroundRequestHandler for CallHierarchyOutgoingCallsRequestHandler {
             ) else {
                 continue;
             };
+            if !snapshot.project_owns_file(project, file) {
+                continue;
+            }
 
             for call in ty_ide::outgoing_calls(db, file, offset) {
                 let Some(to) = convert_to_lsp_item(db, call.to, encoding) else {

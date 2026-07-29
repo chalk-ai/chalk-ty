@@ -30,7 +30,8 @@ impl BackgroundRequestHandler for CallHierarchyIncomingCallsRequestHandler {
         let requested_item = &params.item;
         let mut calls = Vec::new();
 
-        for db in snapshot.projects() {
+        for project in snapshot.routed_projects() {
+            let db = project.db();
             let Some((file, offset)) = resolve_file_uri_range(
                 db,
                 &requested_item.uri,
@@ -39,6 +40,9 @@ impl BackgroundRequestHandler for CallHierarchyIncomingCallsRequestHandler {
             ) else {
                 continue;
             };
+            if !snapshot.project_owns_file(project, file) {
+                continue;
+            }
 
             for call in ty_ide::incoming_calls(db, file, offset) {
                 // `from_ranges` are byte offsets into `call.from.file` (the caller),
