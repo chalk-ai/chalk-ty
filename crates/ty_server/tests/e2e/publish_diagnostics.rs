@@ -39,6 +39,91 @@ def foo() -> str:
 }
 
 #[test]
+fn chalk_closed_helper_diagnostic_is_merged_into_one_publication() -> Result<()> {
+    let workspace_root = SystemPath::new("src");
+    let ty_config = SystemPath::new("src/ty.toml");
+    let marker = SystemPath::new("src/project/chalk.yml");
+    let package = SystemPath::new("src/project/__init__.py");
+    let main = SystemPath::new("src/project/main.py");
+    let helper = SystemPath::new("src/project/helper.py");
+    let external = SystemPath::new("src/external.py");
+    let main_content = "\
+from project import helper
+from chalk import online
+import external
+
+def bad() -> str:
+    external.unsupported()
+    return 42
+
+@online
+def root():
+    helper.closed_edge()
+    helper.closed_edge()
+";
+
+    // The ty root makes `external` importable while the nested Chalk root keeps it third-party.
+    let mut server = TestServerBuilder::new()?
+        .with_workspace(workspace_root, None)?
+        .with_file(ty_config, "")?
+        .with_file(marker, "")?
+        .with_file(package, "")?
+        .with_file(main, main_content)?
+        .with_file(
+            helper,
+            "from project import main\n\ndef closed_edge():\n    main.bad()\n",
+        )?
+        .with_file(external, "def unsupported() -> None: pass\n")?
+        .enable_diagnostic_related_information(true)
+        .enable_pull_diagnostics(false)
+        .build()
+        .wait_until_workspaces_are_initialized();
+
+    // `helper.py` is indexed as a closed first-party source; only `main.py` is published.
+    server.open_text_document(main, main_content, 1);
+    let diagnostics = server.await_notification::<PublishDiagnosticsNotification>();
+
+    assert_eq!(diagnostics.uri, server.file_uri(main));
+    assert_eq!(diagnostics.version, Some(1));
+    assert!(diagnostics.diagnostics.iter().any(|diagnostic| {
+        diagnostic.source.as_deref() == Some("ty")
+            && diagnostic.code.as_ref()
+                == Some(&lsp_types::Code::String("invalid-return-type".to_owned()))
+    }));
+    let chalk_diagnostics = diagnostics
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.source.as_deref() == Some("chalk"))
+        .collect::<Vec<_>>();
+    assert_eq!(chalk_diagnostics.len(), 1);
+    let chalk = chalk_diagnostics[0];
+    assert_eq!(
+        chalk.message,
+        Message::String("Call is not supported by the static accelerator".to_owned())
+    );
+    let related = chalk
+        .related_information
+        .as_deref()
+        .expect("Chalk details should use related information when supported");
+    assert_eq!(related.len(), 1);
+    assert_eq!(
+        related[0].message,
+        "Target `external.unsupported`: no static-accelerator registry entry"
+    );
+    assert_eq!(related[0].location.uri, server.file_uri(external));
+    assert!(
+        server
+            .try_await_notification::<PublishDiagnosticsNotification>(Some(Duration::from_millis(
+                100
+            )))
+            .is_err(),
+        "the open main must receive one merged notification and the closed helper none"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn full_diagnostic_output() -> Result<()> {
     let workspace_root = SystemPath::new("src");
     let foo = SystemPath::new("src/foo.py");
@@ -590,6 +675,53 @@ def foo() -> str:
         diagnostics.is_err(),
         "Server should not send a publish diagnostic notification if the client supports pull diagnostics"
     );
+
+    Ok(())
+}
+
+#[test]
+fn watched_file_settings_diagnostics_preserve_exact_project_routes() -> Result<()> {
+    let repository = SystemPath::new("repository");
+    let workspace = repository.join("service");
+    let repository_config = repository.join("ty.toml");
+    let workspace_config = workspace.join("ty.toml");
+    let main = workspace.join("main.py");
+    let invalid_config = "[rules]\nnot-a-rule = \"error\"\n";
+    let mut server = TestServerBuilder::new()?
+        .with_workspace(&workspace, None)?
+        .with_file(repository.join("chalk.yml"), "")?
+        .with_file(&repository_config, invalid_config)?
+        .with_file(&workspace_config, invalid_config)?
+        .with_file(&main, "")?
+        .build()
+        .wait_until_workspaces_are_initialized();
+
+    let initial = server.await_notification::<PublishDiagnosticsNotification>();
+    assert_eq!(initial.uri, server.file_uri(&workspace_config));
+
+    // Opening the document creates a Chalk route at `repository` above the workspace route.
+    server.open_text_document(&main, "", 1);
+    server.did_change_watched_files(vec![
+        FileEvent {
+            uri: server.file_uri(&repository_config),
+            kind: FileChangeType::Changed,
+        },
+        FileEvent {
+            uri: server.file_uri(&workspace_config),
+            kind: FileChangeType::Changed,
+        },
+    ]);
+
+    let diagnostics = collect_publish_diagnostic_notifications_with_versions(&mut server, 2);
+    for config in [&repository_config, &workspace_config] {
+        let uri = server.file_uri(config);
+        assert!(
+            diagnostics
+                .get(&uri)
+                .is_some_and(|params| !params.diagnostics.is_empty()),
+            "expected settings diagnostics from the exact project route for {uri}"
+        );
+    }
 
     Ok(())
 }
