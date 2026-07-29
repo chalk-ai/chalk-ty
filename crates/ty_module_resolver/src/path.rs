@@ -624,7 +624,7 @@ impl SearchPath {
     }
 
     /// Is this a user-provided extra search path?
-    pub(crate) fn is_extra(&self) -> bool {
+    pub fn is_extra(&self) -> bool {
         matches!(&*self.0, SearchPathInner::Extra(_))
     }
 
@@ -640,7 +640,7 @@ impl SearchPath {
     }
 
     /// Is the module on a search path for installed third-party code?
-    pub(crate) fn is_third_party(&self) -> bool {
+    pub fn is_third_party(&self) -> bool {
         match &*self.0 {
             SearchPathInner::SitePackages(_)
             | SearchPathInner::Editable(_)

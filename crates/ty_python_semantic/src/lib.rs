@@ -48,6 +48,7 @@ pub use types::ide_support::{
 };
 pub use types::{DisplaySettings, TypeQualifiers};
 
+pub mod chalk;
 mod db;
 mod dunder_all;
 mod fixes;
