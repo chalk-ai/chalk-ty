@@ -148,7 +148,6 @@ impl ActiveChalkProject {
             ChangeEvent::Changed { .. } => {
                 path == self.project.config_path()
                     || matches!(path.file_name(), Some(".gitignore" | ".chalkignore"))
-                    || !is_source(path)
             }
             ChangeEvent::CreatedVirtual(_)
             | ChangeEvent::ChangedVirtual(_)
@@ -184,13 +183,6 @@ fn source_files(
     source_files.sort_by(|left, right| left.path(db).as_str().cmp(right.path(db).as_str()));
 
     Ok((source_files.into_boxed_slice(), ignore_path))
-}
-
-fn is_source(path: &SystemPath) -> bool {
-    path.extension() == Some("py")
-        || path
-            .file_name()
-            .is_some_and(|name| name.ends_with(".chalk.sql"))
 }
 
 #[cfg(test)]
@@ -273,6 +265,10 @@ mod tests {
             ChangeEvent::file_content_changed(SystemPathBuf::from("/workspace/old.py"));
         assert!(!project.should_refresh(&content_change));
         assert!(!project.refresh(&mut db).unwrap());
+
+        let unrelated_change =
+            ChangeEvent::file_content_changed(SystemPathBuf::from("/workspace/notes.txt"));
+        assert!(!project.should_refresh(&unrelated_change));
 
         db.write_file("/workspace/new.py", "").unwrap();
         let created = ChangeEvent::Created {
