@@ -4,8 +4,10 @@
 
 `chalk/reexports.pyi`:
 
-```py
-from chalk.features import _ as feature
+```pyi
+from chalk.features import _
+
+feature = _
 ```
 
 `main.py`:
@@ -90,18 +92,16 @@ class User(Base):
     reveal_type(_.HAS_ITIN["all"] - _.HAS_SSN_MATCH_DOB["all"])  # revealed: Resolved[int]
     reveal_type(1 - _.HAS_ITIN["all"])  # revealed: Resolved[int]
     reveal_type(_.HAS_ITIN["all"] * _.HAS_SSN_MATCH_DOB["all"])  # revealed: Resolved[int]
-    reveal_type(2.0 * _.HAS_ITIN["all"])  # revealed: Resolved[float]
-    reveal_type(_.HAS_ITIN["all"] * _.FLOAT_VALUE["all"])  # revealed: Resolved[float]
-    reveal_type(_.HAS_ITIN["all"] / _.HAS_SSN_MATCH_DOB["all"])  # revealed: Resolved[float]
-    reveal_type(1 / _.HAS_ITIN["all"])  # revealed: Resolved[float]
+    reveal_type(2.0 * _.HAS_ITIN["all"])  # revealed: Resolved[int | float]
+    reveal_type(_.HAS_ITIN["all"] * _.FLOAT_VALUE["all"])  # revealed: Resolved[int | float]
+    reveal_type(_.HAS_ITIN["all"] / _.HAS_SSN_MATCH_DOB["all"])  # revealed: Resolved[int | float]
+    reveal_type(1 / _.HAS_ITIN["all"])  # revealed: Resolved[int | float]
     reveal_type(_.HAS_ITIN["all"] // _.HAS_SSN_MATCH_DOB["all"])  # revealed: Resolved[int]
-    reveal_type(1.0 // _.HAS_ITIN["all"])  # revealed: Resolved[float]
-    reveal_type(_.HAS_ITIN["all"] // _.FLOAT_VALUE["all"])  # revealed: Resolved[float]
+    reveal_type(1.0 // _.HAS_ITIN["all"])  # revealed: Resolved[int | float]
+    reveal_type(_.HAS_ITIN["all"] // _.FLOAT_VALUE["all"])  # revealed: Resolved[int | float]
     reveal_type(_.if_then_else(_.HAS_ITIN["all"] > 0, _.HAS_ITIN["all"], 0))  # revealed: Resolved[int]
     reveal_type(F.if_then_else(_.HAS_ITIN["all"] > 0, _.email, None))  # revealed: Resolved[str | None]
-    reveal_type(
-        F.if_then_else(_.HAS_ITIN["all"] > 0, F.if_then_else(_.HAS_SSN_MATCH_DOB["all"] > 0, 1, 0), None)
-    )  # revealed: Resolved[Literal[1, 0] | None]
+    reveal_type(nested_conditional)  # revealed: Resolved[Literal[1, 0] | None]
     reveal_type(_.HAS_ITIN["all"] > 0)  # revealed: Resolved[bool]
     reveal_type((_.HAS_ITIN["all"] > 0) & (_.HAS_SSN_MATCH_DOB["all"] > 0))  # revealed: Resolved[bool]
     reveal_type(True & (_.HAS_ITIN["all"] > 0))  # revealed: Resolved[bool]
@@ -117,7 +117,7 @@ reveal_type(User.account.identifier)  # revealed: Resolved[str]
 reveal_type(User().email)  # revealed: str
 reveal_type(User().primary_email)  # revealed: str
 reveal_type(User().optional_email)  # revealed: str | None
-reveal_type(User(primary_email="primary@example.com").primary_email)  # revealed: str
+reveal_type(User(primary_email="primary@example.com").primary_email)  # revealed: Literal["primary@example.com"]
 reveal_type(User.emails_as_set)  # revealed: Windowed[list[str] | None]
 reveal_type(User.chalk_window)  # revealed: Resolved[str]
 
@@ -146,8 +146,9 @@ class LocallyShadowed:
 
     reveal_type(_.email)  # revealed: str
 
-_ = Shadow()
-reveal_type(_.email)  # revealed: str
+def local_shadow() -> None:
+    _ = Shadow()
+    reveal_type(_.email)  # revealed: str
 ```
 
 The Chalk underscore remains an ordinary runtime placeholder outside a feature class:

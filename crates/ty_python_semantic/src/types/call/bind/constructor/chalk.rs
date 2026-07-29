@@ -85,11 +85,7 @@ impl<'db> ConstructorBinding<'db> {
             ));
         }
 
-        if members.is_empty() {
-            return return_ty;
-        }
-
-        let supplied_fields = Type::protocol_with_readonly_members(
+        let supplied_fields = Type::chalk_supplied_features_protocol(
             db,
             members.iter().map(|(name, ty)| (name.as_str(), *ty)),
         );

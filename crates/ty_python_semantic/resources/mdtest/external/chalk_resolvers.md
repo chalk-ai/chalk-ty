@@ -64,9 +64,8 @@ def missing_score() -> Features[User.name, User.score]:
     return User(name="Ada")  # error: [invalid-return-type] "Return value is missing required field `score`"
 
 def missing_multiple() -> Features[User.name, User.score, User.account.identifier]:
-    return User(
-        name="Ada"
-    )  # error: [invalid-return-type] "Return value is missing required fields `score` and `account.identifier`"
+    # error: [invalid-return-type] "Return value is missing required fields `account.identifier` and `score`"
+    return User(name="Ada")
 ```
 
 ## Scalar returns

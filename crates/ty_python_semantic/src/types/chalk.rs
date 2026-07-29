@@ -574,13 +574,29 @@ impl<'db> Type<'db> {
         fn compare<'db>(
             db: &'db dyn Db,
             expected: Type<'db>,
-            actual: Type<'db>,
+            mut actual: Type<'db>,
             prefix: &str,
             missing: &mut Vec<String>,
         ) -> bool {
             let Some(protocol) = chalk_protocol(expected) else {
                 return actual.is_assignable_to(db, expected);
             };
+            if let Type::Intersection(intersection) = actual
+                && let Some(supplied) =
+                    intersection
+                        .positive(db)
+                        .iter()
+                        .copied()
+                        .find(|positive| match positive {
+                            Type::ProtocolInstance(protocol) => {
+                                protocol.synthesized_kind()
+                                    == Some(SynthesizedProtocolKind::ChalkSuppliedFeatures)
+                            }
+                            _ => false,
+                        })
+            {
+                actual = supplied;
+            }
 
             let mut compatible = true;
             for member in protocol.interface(db).members(db) {
@@ -625,6 +641,15 @@ impl<'db> Type<'db> {
         let mut missing = Vec::new();
         let compatible = compare(db, self, actual, "", &mut missing);
         (compatible && !missing.is_empty()).then_some(missing)
+    }
+
+    pub(super) fn chalk_features_return_is_incomplete(
+        self,
+        db: &'db dyn Db,
+        actual: Type<'db>,
+    ) -> bool {
+        !self.chalk_features_return_is_compatible(db, actual)
+            && self.chalk_missing_return_fields(db, actual).is_some()
     }
 
     /// Return expressions for `Features[Name.field]` may have the declared type of `Name.field`.

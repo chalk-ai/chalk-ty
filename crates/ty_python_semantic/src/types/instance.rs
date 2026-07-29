@@ -167,6 +167,17 @@ impl<'db> Type<'db> {
         ))
     }
 
+    pub(super) fn chalk_supplied_features_protocol<'a, M>(db: &'db dyn Db, members: M) -> Self
+    where
+        M: IntoIterator<Item = (&'a str, Type<'db>)>,
+    {
+        Self::ProtocolInstance(ProtocolInstanceType::synthesized(
+            SynthesizedProtocolType::chalk_supplied_features(
+                ProtocolInterface::with_property_members(db, members),
+            ),
+        ))
+    }
+
     /// Synthesize a protocol instance type with a given set of methods.
     pub(super) fn protocol_with_methods<'a, M>(db: &'db dyn Db, methods: M) -> Self
     where
@@ -1010,6 +1021,7 @@ mod synthesized_protocol {
     pub(in crate::types) enum SynthesizedProtocolKind {
         General,
         ChalkFeatures,
+        ChalkSuppliedFeatures,
     }
 
     /// A "synthesized" protocol type that is dissociated from a class definition in source code.
@@ -1026,6 +1038,10 @@ mod synthesized_protocol {
 
         pub(super) fn chalk_features(interface: ProtocolInterface<'db>) -> Self {
             Self(interface, SynthesizedProtocolKind::ChalkFeatures)
+        }
+
+        pub(super) fn chalk_supplied_features(interface: ProtocolInterface<'db>) -> Self {
+            Self(interface, SynthesizedProtocolKind::ChalkSuppliedFeatures)
         }
 
         pub(in crate::types) fn kind(self) -> SynthesizedProtocolKind {

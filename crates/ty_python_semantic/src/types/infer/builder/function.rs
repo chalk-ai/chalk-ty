@@ -215,6 +215,10 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                             .copied()
                             .filter(|actual_return_ty| {
                                 !actual_return_ty.ty.is_assignable_to(db, expected_return_ty)
+                                    || expected_return_ty.chalk_features_return_is_incomplete(
+                                        db,
+                                        actual_return_ty.ty,
+                                    )
                             })
                     {
                         report_invalid_return_type(
@@ -260,7 +264,10 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                     ty if ty.is_notimplemented(db) => None,
                     _ => Some(ty_range),
                 })
-                .filter(|ty_range| !expected_return.accepts(db, ty_range.ty))
+                .filter(|ty_range| {
+                    !expected_return.accepts(db, ty_range.ty)
+                        || declared_ty.chalk_features_return_is_incomplete(db, ty_range.ty)
+                })
             {
                 report_invalid_return_type(
                     &self.context,
