@@ -61,7 +61,7 @@ pub use symbols::{FlatSymbols, HierarchicalSymbols, SymbolId, SymbolInfo, Symbol
 pub use type_hierarchy::{
     TypeHierarchyItem, prepare_type_hierarchy, type_hierarchy_subtypes, type_hierarchy_supertypes,
 };
-pub use workspace_symbols::{WorkspaceSymbolInfo, workspace_symbols};
+pub use workspace_symbols::{WorkspaceSymbolInfo, workspace_symbols, workspace_symbols_for_files};
 
 use ruff_db::{
     files::{File, FileRange},

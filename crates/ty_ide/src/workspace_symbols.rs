@@ -1,11 +1,27 @@
 use crate::symbols::{QueryPattern, SymbolInfo, symbols_for_file};
 use rayon::prelude::*;
 use ruff_db::files::File;
+use rustc_hash::FxHashSet;
 use ty_project::{Db, parallel::ParallelIteratorExt};
 
 /// Get all workspace symbols matching the query string.
 /// Returns symbols from all files in the workspace, filtered by the query.
 pub fn workspace_symbols(db: &dyn Db, query: &str) -> Vec<WorkspaceSymbolInfo> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+
+    workspace_symbols_for_files(db, query, db.project().files(db).iter().copied())
+}
+
+/// Get all workspace symbols matching the query string from the explicitly supplied files.
+///
+/// Duplicate files are searched only once.
+pub fn workspace_symbols_for_files(
+    db: &dyn Db,
+    query: &str,
+    files: impl IntoIterator<Item = File>,
+) -> Vec<WorkspaceSymbolInfo> {
     // If the query is empty, return immediately to avoid expensive file scanning
     if query.is_empty() {
         return Vec::new();
@@ -14,11 +30,12 @@ pub fn workspace_symbols(db: &dyn Db, query: &str) -> Vec<WorkspaceSymbolInfo> {
     let workspace_symbols_span = tracing::debug_span!("workspace_symbols");
     let _span = workspace_symbols_span.enter();
 
-    let project = db.project();
-
     let query = QueryPattern::fuzzy(query);
-    let files = project.files(db);
-    let files: Vec<_> = files.iter().copied().collect();
+    let mut seen = FxHashSet::default();
+    let files: Vec<_> = files
+        .into_iter()
+        .filter(|file| seen.insert(*file))
+        .collect();
 
     files
         .into_par_iter()
