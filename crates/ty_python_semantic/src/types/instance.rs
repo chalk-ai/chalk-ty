@@ -151,7 +151,11 @@ impl<'db> Type<'db> {
         M: IntoIterator<Item = (&'a str, Type<'db>)>,
     {
         Self::ProtocolInstance(ProtocolInstanceType::synthesized(
-            SynthesizedProtocolType::new(ProtocolInterface::with_property_members(db, members)),
+            SynthesizedProtocolType::new(ProtocolInterface::with_property_members(
+                db,
+                members,
+                SynthesizedProtocolKind::General,
+            )),
         ))
     }
 
@@ -161,20 +165,11 @@ impl<'db> Type<'db> {
         M: IntoIterator<Item = (&'a str, Type<'db>)>,
     {
         Self::ProtocolInstance(ProtocolInstanceType::synthesized(
-            SynthesizedProtocolType::chalk_features(ProtocolInterface::with_property_members(
-                db, members,
+            SynthesizedProtocolType::new(ProtocolInterface::with_property_members(
+                db,
+                members,
+                SynthesizedProtocolKind::ChalkFeatures,
             )),
-        ))
-    }
-
-    pub(super) fn chalk_supplied_features_protocol<'a, M>(db: &'db dyn Db, members: M) -> Self
-    where
-        M: IntoIterator<Item = (&'a str, Type<'db>)>,
-    {
-        Self::ProtocolInstance(ProtocolInstanceType::synthesized(
-            SynthesizedProtocolType::chalk_supplied_features(
-                ProtocolInterface::with_property_members(db, members),
-            ),
         ))
     }
 
@@ -793,9 +788,9 @@ pub(super) fn walk_protocol_instance_type<'db, V: super::visitor::TypeVisitor<'d
 }
 
 impl<'db> ProtocolInstanceType<'db> {
-    pub(super) fn synthesized_kind(self) -> Option<SynthesizedProtocolKind> {
+    pub(super) fn synthesized_kind(self, db: &'db dyn Db) -> Option<SynthesizedProtocolKind> {
         match self.inner {
-            Protocol::Synthesized(synthesized) => Some(synthesized.kind()),
+            Protocol::Synthesized(synthesized) => Some(synthesized.kind(db)),
             Protocol::FromClass(_) => None,
         }
     }
@@ -1021,31 +1016,19 @@ mod synthesized_protocol {
     pub(in crate::types) enum SynthesizedProtocolKind {
         General,
         ChalkFeatures,
-        ChalkSuppliedFeatures,
     }
 
     /// A "synthesized" protocol type that is dissociated from a class definition in source code.
     #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, salsa::Update, get_size2::GetSize)]
-    pub(in crate::types) struct SynthesizedProtocolType<'db>(
-        ProtocolInterface<'db>,
-        SynthesizedProtocolKind,
-    );
+    pub(in crate::types) struct SynthesizedProtocolType<'db>(ProtocolInterface<'db>);
 
     impl<'db> SynthesizedProtocolType<'db> {
         pub(super) fn new(interface: ProtocolInterface<'db>) -> Self {
-            Self(interface, SynthesizedProtocolKind::General)
+            Self(interface)
         }
 
-        pub(super) fn chalk_features(interface: ProtocolInterface<'db>) -> Self {
-            Self(interface, SynthesizedProtocolKind::ChalkFeatures)
-        }
-
-        pub(super) fn chalk_supplied_features(interface: ProtocolInterface<'db>) -> Self {
-            Self(interface, SynthesizedProtocolKind::ChalkSuppliedFeatures)
-        }
-
-        pub(in crate::types) fn kind(self) -> SynthesizedProtocolKind {
-            self.1
+        pub(in crate::types) fn kind(self, db: &'db dyn Db) -> SynthesizedProtocolKind {
+            self.0.kind(db)
         }
 
         pub(super) fn apply_type_mapping_impl<'a>(
@@ -1058,7 +1041,6 @@ mod synthesized_protocol {
             Self(
                 self.0
                     .apply_type_mapping_impl(db, type_mapping, tcx, visitor),
-                self.1,
             )
         }
 
@@ -1085,7 +1067,6 @@ mod synthesized_protocol {
         ) -> Option<Self> {
             Some(Self(
                 self.0.recursive_type_normalized_impl(db, div, nested)?,
-                self.1,
             ))
         }
     }

@@ -85,7 +85,7 @@ impl<'db> ConstructorBinding<'db> {
             ));
         }
 
-        let supplied_fields = Type::chalk_supplied_features_protocol(
+        let supplied_fields = Type::chalk_features_protocol(
             db,
             members.iter().map(|(name, ty)| (name.as_str(), *ty)),
         );

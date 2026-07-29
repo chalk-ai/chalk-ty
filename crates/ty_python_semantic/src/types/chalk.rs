@@ -231,12 +231,13 @@ impl<'db> Type<'db> {
         self.chalk_class_derived_from(db, "enum", "Enum")
     }
 
-    pub(crate) fn chalk_is_logical_struct(self, _db: &'db dyn Db) -> bool {
+    pub(crate) fn chalk_is_logical_struct(self, db: &'db dyn Db) -> bool {
         matches!(self, Type::TypedDict(_))
             || matches!(
                 self,
                 Type::ProtocolInstance(protocol)
-                    if protocol.synthesized_kind() == Some(SynthesizedProtocolKind::ChalkFeatures)
+                    if protocol.synthesized_kind(db)
+                        == Some(SynthesizedProtocolKind::ChalkFeatures)
             )
     }
 
@@ -513,11 +514,14 @@ impl<'db> Type<'db> {
         db: &'db dyn Db,
         actual: Type<'db>,
     ) -> Option<Vec<String>> {
-        fn chalk_protocol<'db>(ty: Type<'db>) -> Option<super::ProtocolInstanceType<'db>> {
+        fn chalk_protocol<'db>(
+            db: &'db dyn Db,
+            ty: Type<'db>,
+        ) -> Option<super::ProtocolInstanceType<'db>> {
             let Type::ProtocolInstance(protocol) = ty else {
                 return None;
             };
-            (protocol.synthesized_kind() == Some(SynthesizedProtocolKind::ChalkFeatures))
+            (protocol.synthesized_kind(db) == Some(SynthesizedProtocolKind::ChalkFeatures))
                 .then_some(protocol)
         }
 
@@ -556,7 +560,7 @@ impl<'db> Type<'db> {
             prefix: String,
             out: &mut Vec<String>,
         ) {
-            let Some(protocol) = chalk_protocol(expected) else {
+            let Some(protocol) = chalk_protocol(db, expected) else {
                 out.push(prefix);
                 return;
             };
@@ -578,7 +582,7 @@ impl<'db> Type<'db> {
             prefix: &str,
             missing: &mut Vec<String>,
         ) -> bool {
-            let Some(protocol) = chalk_protocol(expected) else {
+            let Some(protocol) = chalk_protocol(db, expected) else {
                 return actual.is_assignable_to(db, expected);
             };
             if let Type::Intersection(intersection) = actual
@@ -589,8 +593,8 @@ impl<'db> Type<'db> {
                         .copied()
                         .find(|positive| match positive {
                             Type::ProtocolInstance(protocol) => {
-                                protocol.synthesized_kind()
-                                    == Some(SynthesizedProtocolKind::ChalkSuppliedFeatures)
+                                protocol.synthesized_kind(db)
+                                    == Some(SynthesizedProtocolKind::ChalkFeatures)
                             }
                             _ => false,
                         })
@@ -637,7 +641,7 @@ impl<'db> Type<'db> {
             compatible
         }
 
-        chalk_protocol(self)?;
+        chalk_protocol(db, self)?;
         let mut missing = Vec::new();
         let compatible = compare(db, self, actual, "", &mut missing);
         (compatible && !missing.is_empty()).then_some(missing)
@@ -661,7 +665,7 @@ impl<'db> Type<'db> {
         let Type::ProtocolInstance(protocol) = self else {
             return false;
         };
-        if protocol.synthesized_kind() != Some(SynthesizedProtocolKind::ChalkFeatures) {
+        if protocol.synthesized_kind(db) != Some(SynthesizedProtocolKind::ChalkFeatures) {
             return false;
         }
 
@@ -669,7 +673,7 @@ impl<'db> Type<'db> {
             let Type::ProtocolInstance(protocol) = ty else {
                 return Some(ty);
             };
-            if protocol.synthesized_kind() != Some(SynthesizedProtocolKind::ChalkFeatures) {
+            if protocol.synthesized_kind(db) != Some(SynthesizedProtocolKind::ChalkFeatures) {
                 return Some(ty);
             }
 

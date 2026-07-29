@@ -12,6 +12,7 @@ use crate::types::attribute_write::{
 };
 use crate::types::call::{CallArguments, CallDunderError};
 use crate::types::callable::CallableTypeKind;
+use crate::types::instance::SynthesizedProtocolKind;
 use crate::types::relation::{DisjointnessChecker, TypeRelationChecker};
 use crate::types::{TypeContext, UpcastPolicy};
 use crate::{
@@ -193,6 +194,7 @@ impl<'db> From<ProtocolClass<'db>> for Type<'db> {
 pub(super) struct ProtocolInterface<'db> {
     #[returns(ref)]
     inner: BTreeMap<Name, ProtocolMemberData<'db>>,
+    pub(super) kind: SynthesizedProtocolKind,
 }
 
 impl get_size2::GetSize for ProtocolInterface<'_> {}
@@ -212,7 +214,11 @@ impl<'db> ProtocolInterface<'db> {
     ///
     /// All created members will be covariant, read-only property members
     /// rather than method members or mutable attribute members.
-    pub(super) fn with_property_members<'a, M>(db: &'db dyn Db, members: M) -> Self
+    pub(super) fn with_property_members<'a, M>(
+        db: &'db dyn Db,
+        members: M,
+        kind: SynthesizedProtocolKind,
+    ) -> Self
     where
         M: IntoIterator<Item = (&'a str, Type<'db>)>,
     {
@@ -225,7 +231,7 @@ impl<'db> ProtocolInterface<'db> {
                 )
             })
             .collect();
-        Self::new(db, members)
+        Self::new(db, members, kind)
     }
 
     /// Synthesize a new protocol interface with the given methods.
@@ -237,11 +243,11 @@ impl<'db> ProtocolInterface<'db> {
             .into_iter()
             .map(|(name, callable)| (Name::new(name), ProtocolMemberData::method(callable, None)))
             .collect();
-        Self::new(db, members)
+        Self::new(db, members, SynthesizedProtocolKind::General)
     }
 
     fn empty(db: &'db dyn Db) -> Self {
-        Self::new(db, BTreeMap::default())
+        Self::new(db, BTreeMap::default(), SynthesizedProtocolKind::General)
     }
 
     fn cycle_normalized(self, db: &'db dyn Db, previous: Self, cycle: &salsa::Cycle) -> Self {
@@ -259,7 +265,7 @@ impl<'db> ProtocolInterface<'db> {
                 (name.clone(), normalized)
             })
             .collect();
-        Self::new(db, members)
+        Self::new(db, members, self.kind(db))
     }
 
     pub(super) fn members<'a>(
@@ -371,6 +377,7 @@ impl<'db> ProtocolInterface<'db> {
                     ))
                 })
                 .collect::<Option<BTreeMap<_, _>>>()?,
+            self.kind(db),
         ))
     }
 
@@ -392,6 +399,7 @@ impl<'db> ProtocolInterface<'db> {
                     )
                 })
                 .collect::<BTreeMap<_, _>>(),
+            self.kind(db),
         )
     }
 
@@ -1990,7 +1998,7 @@ fn cached_protocol_interface<'db>(
         }
     }
 
-    ProtocolInterface::new(db, members)
+    ProtocolInterface::new(db, members, SynthesizedProtocolKind::General)
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
