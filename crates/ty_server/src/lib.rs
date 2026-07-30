@@ -19,7 +19,7 @@ mod server;
 mod session;
 mod system;
 
-pub(crate) const SERVER_NAME: &str = "ty";
+pub(crate) const SERVER_NAME: &str = "chalk-lsp";
 pub(crate) const DIAGNOSTIC_NAME: &str = "ty";
 
 /// A common result type used in most cases where a
@@ -80,11 +80,11 @@ fn print_interactive_warning() -> std::io::Result<()> {
         let mut stderr = std::io::stderr().lock();
         writeln!(
             stderr,
-            "WARNING: the ty LSP server should not be run interactively"
+            "WARNING: the chalk-lsp LSP server should not be run interactively"
         )?;
         writeln!(
             stderr,
-            "See https://docs.astral.sh/ty/editors/ for how to configure your editor"
+            "See https://docs.chalk.ai/docs/editor-setup for how to configure your editor"
         )?;
     }
     Ok(())

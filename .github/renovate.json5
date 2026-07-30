@@ -2,8 +2,6 @@
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
   dependencyDashboard: true,
   suppressNotifications: ["prEditedNotification"],
-  extends: ["github>astral-sh/renovate-config"],
-  labels: ["internal"],
   schedule: ["before 4am on Wednesday"],
   semanticCommits: "disabled",
   separateMajorMinor: false,

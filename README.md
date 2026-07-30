@@ -1,3 +1,9 @@
+This repository contains `chalk-lsp`, Chalk's drop-in replacement for the legacy
+language server, built on [ty](https://github.com/astral-sh/ty) and
+[Ruff](https://github.com/astral-sh/ruff).
+
+The inherited upstream Ruff README follows.
+
 <!-- Begin section: Overview -->
 
 # Ruff
@@ -12,8 +18,6 @@
 [**Docs**](https://docs.astral.sh/ruff/) | [**Playground**](https://play.ruff.rs/)
 
 An extremely fast Python linter and code formatter, written in Rust.
-
-This is a fork, adapted for [Chalk](https://chalk.ai).
 
 <p align="center">
   <picture align="center">

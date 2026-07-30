@@ -20,7 +20,11 @@ const STYLES: Styles = Styles::styled()
     .placeholder(AnsiColor::Cyan.on_default());
 
 #[derive(Debug, Parser)]
-#[command(author, name = "ty", about = "An extremely fast Python type checker.")]
+#[command(
+    author,
+    name = "chalk-lsp",
+    about = "Chalk's Python type checker and language server."
+)]
 #[command(long_version = crate::version::version())]
 #[command(styles = STYLES)]
 pub struct Cli {

@@ -217,7 +217,7 @@ impl ServerPanicHookHandler {
 
             if let Some(client) = hook_client.upgrade() {
                 client.show_message(
-                    "The ty language server exited with a panic. See the logs for more details.",
+                    "chalk-lsp exited with a panic. See the logs for more details.",
                     MessageType::Error,
                 );
             }

@@ -2,12 +2,12 @@
 name = "ty_chalk"
 version = "0.0.0"
 publish = false
-authors = { workspace = true }
+description = "Chalk-specific analysis for chalk-lsp"
+authors = ["Chalk AI, Inc."]
 edition = { workspace = true }
 rust-version = { workspace = true }
-homepage = { workspace = true }
-documentation = { workspace = true }
-repository = { workspace = true }
+homepage = "https://chalk.ai"
+repository = "https://github.com/chalk-ai/chalk-ty"
 license = { workspace = true }
 
 [lib]
