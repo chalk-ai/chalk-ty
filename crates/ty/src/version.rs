@@ -39,14 +39,24 @@ impl fmt::Display for VersionInfo {
     }
 }
 
-impl From<VersionInfo> for clap::builder::Str {
-    fn from(val: VersionInfo) -> Self {
+#[derive(Serialize)]
+#[serde(transparent)]
+pub(crate) struct ReportedVersion(VersionInfo);
+
+impl fmt::Display for ReportedVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} [ruff {}]", self.0, env!("TY_RUFF_VERSION"))
+    }
+}
+
+impl From<ReportedVersion> for clap::builder::Str {
+    fn from(val: ReportedVersion) -> Self {
         val.to_string().into()
     }
 }
 
 /// Returns information about ty's version.
-pub(crate) fn version() -> VersionInfo {
+pub(crate) fn version() -> ReportedVersion {
     // Environment variables are only read at compile-time
     macro_rules! option_env_str {
         ($name:expr) => {
@@ -72,18 +82,22 @@ pub(crate) fn version() -> VersionInfo {
             .as_ref()
             .and_then(|info| {
                 info.last_tag.as_ref().map(|tag| {
-                    tag.strip_prefix("v")
-                        .map(std::string::ToString::to_string)
-                        .unwrap_or(tag.clone())
+                    if let Some(tag) = tag.strip_prefix("ruff/") {
+                        tag.to_string()
+                    } else {
+                        tag.strip_prefix("v")
+                            .map(std::string::ToString::to_string)
+                            .unwrap_or(tag.clone())
+                    }
                 })
             })
             .unwrap_or("unknown".to_string())
     });
 
-    VersionInfo {
+    ReportedVersion(VersionInfo {
         version,
         commit_info,
-    }
+    })
 }
 
 #[cfg(test)]

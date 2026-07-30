@@ -4,6 +4,9 @@ use std::{
     process::Command,
 };
 
+#[path = "chalk_build.rs"]
+mod chalk;
+
 fn main() {
     // The workspace root directory is not available without walking up the tree
     // https://github.com/rust-lang/cargo/issues/3946
@@ -13,6 +16,7 @@ fn main() {
     let ty_workspace_root = ruff_workspace_root.join("..");
 
     version_info(&ty_workspace_root);
+    chalk::ruff_version_info(&ruff_workspace_root);
 
     // If not in a git repository, do not attempt to retrieve commit information
     let git_dir = ty_workspace_root.join(".git");
@@ -33,6 +37,14 @@ fn main() {
 
 /// Retrieve the version from the `dist-workspace.toml` file and set `TY_VERSION`.
 fn version_info(workspace_root: &Path) {
+    println!("cargo::rerun-if-env-changed=TY_VERSION");
+    if let Ok(version) = std::env::var("TY_VERSION")
+        && !version.is_empty()
+    {
+        println!("cargo::rustc-env=TY_VERSION={version}");
+        return;
+    }
+
     let dist_file = workspace_root.join("dist-workspace.toml");
     if !dist_file.exists() {
         return;

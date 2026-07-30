@@ -1,0 +1,154 @@
+steps:
+  - label: ":rust: Cross-build chalk-lsp ({{matrix.target}})"
+    if: build.tag =~ /^v/
+    matrix:
+      setup:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+          - x86_64-pc-windows-gnu
+    command: |
+      set -euo pipefail
+
+      TARGET="{{matrix.target}}"
+      VERSION="$$BUILDKITE_TAG"
+      [ -n "$$VERSION" ] || {
+        echo "chalk-lsp releases require a v* tag" >&2
+        exit 1
+      }
+
+      if [ -d /buildkite/secrets ]; then
+        for file in /buildkite/secrets/*; do
+          [ -f "$$file" ] || continue
+          key="$$(basename "$$file")"
+          value="$$(cat "$$file")"
+          export "$$key=$$value"
+        done
+      fi
+
+      export CARGO_TERM_COLOR=always
+      export RUST_BACKTRACE=1
+
+      # Persistent cache volume shared across builds
+      sudo mkdir -p /rust-cache
+      sudo chown -R "$$(id -u):$$(id -g)" /rust-cache
+      export CARGO_HOME=/rust-cache/cargo
+      export RUSTUP_HOME=/rust-cache/rustup
+      mkdir -p "$$CARGO_HOME" "$$RUSTUP_HOME"
+      export PATH="$$CARGO_HOME/bin:$$PATH"
+
+      echo "--- :rust: Installing rustup + toolchain"
+      if ! command -v rustup >/dev/null 2>&1; then
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+          | sh -s -- -y --default-toolchain none --no-modify-path
+      fi
+      RUST_VERSION="$$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+      rustup toolchain install "$$RUST_VERSION" --profile minimal --no-self-update
+      rustup target add --toolchain "$$RUST_VERSION" "$$TARGET"
+      rustc --version
+
+      echo "--- :zig: Installing zig + cargo-zigbuild"
+      ZIG_VERSION=0.13.0
+      ZIG_DIR=/rust-cache/zig-$${ZIG_VERSION}
+      if [ ! -x "$$ZIG_DIR/zig" ]; then
+        mkdir -p "$$ZIG_DIR"
+        curl -fsSL "https://ziglang.org/download/$${ZIG_VERSION}/zig-linux-x86_64-$${ZIG_VERSION}.tar.xz" \
+          | tar -C "$$ZIG_DIR" --strip-components=1 -xJf -
+      fi
+      export PATH="$$ZIG_DIR:$$PATH"
+
+      if ! command -v cargo-zigbuild >/dev/null 2>&1; then
+        cargo install --locked cargo-zigbuild --version 0.19.8
+      fi
+
+      case "$$TARGET" in
+        # x86_64-pc-windows-gnu needs dlltool (not bundled with Zig).
+        *-pc-windows-gnu)
+          if ! command -v x86_64-w64-mingw32-dlltool >/dev/null 2>&1; then
+            echo "--- :package: Installing mingw-w64 binutils"
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends binutils-mingw-w64-x86-64
+          fi
+          ;;
+        # macOS targets need an Apple SDK at $SDKROOT.
+        *-apple-darwin)
+          MACOS_SDK_VERSION=14.5
+          MACOS_SDK_DIR=/rust-cache/MacOSX$${MACOS_SDK_VERSION}.sdk
+          if [ ! -d "$$MACOS_SDK_DIR" ]; then
+            echo "--- :apple: Downloading MacOSX SDK $$MACOS_SDK_VERSION"
+            curl -fsSL "https://github.com/joseluisq/macosx-sdks/releases/download/$${MACOS_SDK_VERSION}/MacOSX$${MACOS_SDK_VERSION}.sdk.tar.xz" \
+              -o /tmp/MacOSX.sdk.tar.xz
+            tar -C /rust-cache -xJf /tmp/MacOSX.sdk.tar.xz
+          fi
+          export SDKROOT="$$MACOS_SDK_DIR"
+          ;;
+      esac
+
+      echo "--- :package: Building chalk-lsp $$VERSION for $$TARGET"
+      # Bake the release tag into CLI and LSP version reporting.
+      export TY_VERSION="$$VERSION"
+      cargo zigbuild --release --locked --target "$$TARGET" -p ty --bin ty
+
+      BIN_PATH="target/$$TARGET/release/ty"
+      DEST_BIN=chalk-lsp
+      case "$$TARGET" in
+        *windows*)
+          BIN_PATH="$${BIN_PATH}.exe"
+          DEST_BIN=chalk-lsp.exe
+          ;;
+      esac
+      ls -la "$$BIN_PATH"
+      file "$$BIN_PATH" || true
+
+      # Stage and archive the artifact for upload.
+      # Publish the built `ty` binary as `chalk-lsp`.
+      ARTIFACT_DIR="$$(mktemp -d)"
+      ARTIFACT_NAME="chalk-lsp-$${VERSION}-$${TARGET}"
+      mkdir -p "$$ARTIFACT_DIR/$$ARTIFACT_NAME"
+      cp "$$BIN_PATH" "$$ARTIFACT_DIR/$$ARTIFACT_NAME/$$DEST_BIN"
+      cd "$$ARTIFACT_DIR"
+
+      case "$$TARGET" in
+        *windows*)
+          ARCHIVE="$${ARTIFACT_NAME}.zip"
+          (cd "$$ARTIFACT_NAME" && zip -9 "../$$ARCHIVE" "$$DEST_BIN")
+          ;;
+        *)
+          ARCHIVE="$${ARTIFACT_NAME}.tar.gz"
+          tar -czf "$$ARCHIVE" "$$ARTIFACT_NAME"
+          ;;
+      esac
+      sha256sum "$$ARCHIVE" | tee "$${ARCHIVE}.sha256"
+
+      echo "--- :buildkite: Uploading buildkite artifact"
+      buildkite-agent artifact upload "$$ARCHIVE"
+      buildkite-agent artifact upload "$${ARCHIVE}.sha256"
+
+      echo "--- :gcloud: Pushing to Artifact Registry"
+      for PROJECT in chalk-develop chalk-prod; do
+        gcloud artifacts generic upload \
+          --project="$$PROJECT" \
+          --location=us \
+          --repository=chalk-lsp \
+          --package=chalk-lsp \
+          --version="$$VERSION" \
+          --source="$$ARCHIVE"
+        gcloud artifacts generic upload \
+          --project="$$PROJECT" \
+          --location=us \
+          --repository=chalk-lsp \
+          --package=chalk-lsp \
+          --version="$$VERSION" \
+          --source="$${ARCHIVE}.sha256"
+      done
+    agents:
+      queue: default
+    timeout_in_minutes: 45
+    retry:
+      automatic:
+        - exit_status: -1
+          limit: 2
+        - exit_status: 255
+          limit: 2
