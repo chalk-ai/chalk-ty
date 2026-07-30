@@ -925,6 +925,78 @@ def closed_edge():
 }
 
 #[test]
+fn pyproject_config_domains_are_isolated() -> Result<()> {
+    let workspace_root = SystemPath::new("src");
+    let pyproject = SystemPath::new("src/pyproject.toml");
+    let marker = SystemPath::new("src/project/chalk.yml");
+    let main = SystemPath::new("src/project/main.py");
+    let external = SystemPath::new("src/external.py");
+    let main_content = "\
+from chalk import online
+import external
+
+def bad() -> str:
+    return 42
+
+@online
+def root():
+    external.unsupported()
+";
+
+    let mut server = TestServerBuilder::new()?
+        .with_workspace(workspace_root, None)?
+        .with_file(
+            pyproject,
+            "\
+[tool.ty.rules]
+all = \"ignore\"
+
+[tool.chalk.rules]
+invalid-return-type = \"warn\"
+",
+        )?
+        .with_file(marker, "")?
+        .with_file(main, main_content)?
+        .with_file(external, "def unsupported() -> None: pass\n")?
+        .build()
+        .wait_until_workspaces_are_initialized();
+
+    server.open_text_document(main, main_content, 1);
+    let DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(report) =
+        server.document_diagnostic_request(main, None)
+    else {
+        panic!("document diagnostic response must be a full report");
+    };
+    let diagnostics = report.full_document_diagnostic_report.items;
+    assert_eq!(diagnostics.len(), 2);
+
+    let ty = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.source.as_deref() == Some("ty"))
+        .expect("the fork must ignore the upstream ty configuration domain");
+    assert_eq!(
+        ty.code,
+        Some(lsp_types::Code::String("invalid-return-type".to_owned()))
+    );
+    assert_eq!(ty.severity, Some(lsp_types::DiagnosticSeverity::Warning));
+
+    let chalk = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.source.as_deref() == Some("chalk"))
+        .expect("upstream ty configuration must not suppress Chalk diagnostics");
+    assert_eq!(
+        chalk.code,
+        Some(lsp_types::Code::String("unsupported-function".to_owned()))
+    );
+    assert_eq!(
+        chalk.severity,
+        Some(lsp_types::DiagnosticSeverity::Warning)
+    );
+
+    Ok(())
+}
+
+#[test]
 fn chalk_detail_changes_update_pull_result_id() -> Result<()> {
     let workspace_root = SystemPath::new("src");
     let marker = SystemPath::new("src/chalk.yml");

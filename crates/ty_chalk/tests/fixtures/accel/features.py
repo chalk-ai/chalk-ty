@@ -6,6 +6,7 @@ import math
 import re
 from collections import Counter
 from typing import TypedDict
+from urllib.parse import urlparse
 
 from chalk import online
 
@@ -34,12 +35,18 @@ def resolver() -> None:
     Color.RED.__eq__(Color.RED)
     payload: Payload = {"x": 1}
     bool(payload)
+    values: list[int] = []
+    values.append(1)
 
     math.gcd(4, 2)
     json.load(1)
     re.finditer("x", "xyz")
+    urlparse("https://chalk.ai")
+    mapping = {"x": 1}
+    mapping.values()
     counts: Counter[str] = Counter(["x"])
     len(counts)
+    counts.values()
 
     math.sqrt("x")
     json.loads(1)

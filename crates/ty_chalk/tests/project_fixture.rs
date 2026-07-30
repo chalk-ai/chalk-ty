@@ -71,6 +71,9 @@ fn accel_behavioral_matrix() {
             "math.gcd(4, 2)",
             "json.load(1)",
             "re.finditer(\"x\", \"xyz\")",
+            "urlparse(\"https://chalk.ai\")",
+            "mapping.values()",
+            "counts.values()",
             "math.sqrt(\"x\")",
             "json.loads(1)",
             "re.search(1, \"abc\")",
@@ -78,6 +81,9 @@ fn accel_behavioral_matrix() {
     );
 
     for (diagnostic, (reason, has_suggestions)) in diagnostics.iter().zip([
+        (CallNoMatchReason::MissingRegistryEntry, false),
+        (CallNoMatchReason::MissingRegistryEntry, false),
+        (CallNoMatchReason::MissingRegistryEntry, false),
         (CallNoMatchReason::MissingRegistryEntry, false),
         (CallNoMatchReason::MissingRegistryEntry, false),
         (CallNoMatchReason::MissingRegistryEntry, false),
