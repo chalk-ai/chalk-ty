@@ -13,7 +13,7 @@
 
 An extremely fast Python linter and code formatter, written in Rust.
 
-This is a fork, adapted for [Chalk](https://chalk.ai)
+This is a fork, adapted for [Chalk](https://chalk.ai).
 
 <p align="center">
   <picture align="center">
