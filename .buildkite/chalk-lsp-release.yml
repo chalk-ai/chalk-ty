@@ -1,3 +1,7 @@
+on:
+  tag:
+    branch_filter: "v*"
+
 steps:
   - label: ":rust: Cross-build chalk-lsp ({{matrix.target}})"
     if: build.tag =~ /^v/
