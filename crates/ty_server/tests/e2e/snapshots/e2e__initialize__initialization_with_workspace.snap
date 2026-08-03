@@ -110,7 +110,7 @@ expression: initialization_result
     }
   },
   "serverInfo": {
-    "name": "ty",
+    "name": "chalk-lsp",
     "version": "Unknown"
   }
 }

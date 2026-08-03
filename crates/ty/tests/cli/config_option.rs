@@ -131,7 +131,7 @@ fn cli_config_args_invalid_option() -> anyhow::Result<()> {
     unknown field `bad-option`, expected one of `environment`, `src`, `rules`, `terminal`, `analysis`, `overrides`
 
 
-    Usage: ty <COMMAND>
+    Usage: chalk-lsp <COMMAND>
 
     For more information, try '--help'.
     ");
