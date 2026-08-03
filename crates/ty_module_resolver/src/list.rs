@@ -465,7 +465,13 @@ mod tests {
     }
 
     fn list_snapshot(db: &dyn Db) -> Vec<ModuleDebugSnapshot<'_>> {
-        list_snapshot_filter(db, |_| true)
+        // These tests exercise their explicitly configured search paths. The Chalk stubs are
+        // globally injected into every resolver and would otherwise appear in every snapshot.
+        list_snapshot_filter(db, |module| {
+            module
+                .search_path(db)
+                .is_none_or(|path| path.debug_kind() != "third-party-vendored")
+        })
     }
 
     fn list_snapshot_filter<'db>(
