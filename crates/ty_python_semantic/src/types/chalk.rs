@@ -188,7 +188,7 @@ impl<'db> Type<'db> {
             Ok(None) => return ChalkClassRelation::NoMatch,
             Err(()) => return ChalkClassRelation::Unavailable,
         };
-        registry_class_derived_from(db, class, expected)
+        registry_class_relation(db, class, expected)
     }
 
     pub(crate) fn chalk_class_derived_from(
@@ -339,30 +339,6 @@ fn registry_module_relation(db: &dyn Db, module: Module<'_>, expected: &str) -> 
         module.name(db),
         Some(module),
     ))
-}
-
-fn registry_class_derived_from(
-    db: &dyn Db,
-    class: ClassType<'_>,
-    expected: &str,
-) -> ChalkClassRelation {
-    let mut unavailable = false;
-    for base in class.iter_mro(db) {
-        match base {
-            ClassBase::Class(base) => match registry_class_relation(db, base, expected) {
-                ChalkClassRelation::Match => return ChalkClassRelation::Match,
-                ChalkClassRelation::Unavailable => unavailable = true,
-                ChalkClassRelation::NoMatch => {}
-            },
-            ClassBase::Any | ClassBase::Dynamic(_) | ClassBase::Divergent(_) => unavailable = true,
-            ClassBase::Protocol | ClassBase::Generic | ClassBase::TypedDict(_) => {}
-        }
-    }
-    if unavailable {
-        ChalkClassRelation::Unavailable
-    } else {
-        ChalkClassRelation::NoMatch
-    }
 }
 
 fn registry_class_relation(

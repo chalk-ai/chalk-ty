@@ -1236,7 +1236,7 @@ module.missing()
     }
 
     #[test]
-    fn receiver_relation_preserves_qualified_owners_inheritance_and_uncertainty() {
+    fn receiver_relation_preserves_exact_qualified_owners_and_uncertainty() {
         let (db, file) = setup(
             r#"
 from local import Token as LocalToken
@@ -1266,10 +1266,17 @@ def capture(cls: type[T]):
             .map(|argument| argument.inferred_type(&model).unwrap())
             .collect::<Vec<_>>();
 
-        for index in 0..4 {
+        for index in [0, 2] {
             assert_eq!(
                 chalk_receiver_module_relation(&db, types[index], "pkg.Token"),
                 ChalkClassRelation::Match,
+                "argument {index}"
+            );
+        }
+        for index in [1, 3] {
+            assert_eq!(
+                chalk_receiver_module_relation(&db, types[index], "pkg.Token"),
+                ChalkClassRelation::NoMatch,
                 "argument {index}"
             );
         }

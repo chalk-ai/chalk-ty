@@ -958,6 +958,8 @@ C.class_method(1)
 datetime.datetime.now()
 DerivedDateTime.now()
 DerivedDateTime(2024, 1, 1).now()
+datetime.date.fromisoformat("2024-01-01")
+datetime.datetime.fromisoformat("2024-01-01T00:00:00")
 "#,
             &[],
         );
@@ -974,17 +976,46 @@ DerivedDateTime(2024, 1, 1).now()
                 }]
             );
         }
-        for index in 3..6 {
+        assert_eq!(
+            summarize(call_matches(&db, file, 3)),
+            [MatchSummary::Match {
+                identity: IdentitySummary::Definition,
+                kind: CallKind::Method,
+                name: "now".into(),
+                receiver_parameter: Some(0),
+            }]
+        );
+        for index in 4..6 {
             assert_eq!(
                 summarize(call_matches(&db, file, index)),
-                [MatchSummary::Match {
+                [MatchSummary::NoMatch {
                     identity: IdentitySummary::Definition,
                     kind: CallKind::Method,
                     name: "now".into(),
                     receiver_parameter: Some(0),
+                    reason: CallNoMatchReason::SignatureMismatch,
                 }]
             );
         }
+        assert_eq!(
+            summarize(call_matches(&db, file, 6)),
+            [MatchSummary::Match {
+                identity: IdentitySummary::Definition,
+                kind: CallKind::Method,
+                name: "fromisoformat".into(),
+                receiver_parameter: Some(0),
+            }]
+        );
+        assert_eq!(
+            summarize(call_matches(&db, file, 7)),
+            [MatchSummary::NoMatch {
+                identity: IdentitySummary::Definition,
+                kind: CallKind::Method,
+                name: "fromisoformat".into(),
+                receiver_parameter: Some(0),
+                reason: CallNoMatchReason::SignatureMismatch,
+            }]
+        );
     }
 
     #[test]
