@@ -158,3 +158,40 @@ from chalk.features import _
 
 reveal_type(_.anything)  # revealed: Any
 ```
+
+## Relationship lookup rejects unrelated call-valued fields
+
+Resolving a feature that belongs to a has-many row must skip unrelated subscript-annotated fields
+without inferring their call-valued initializers.
+
+```py
+from typing import Optional
+
+from chalk.features import DataFrame, _, features, has_many
+
+@features
+class Event:
+    timestamp: int
+
+@features
+class User:
+    latest: Optional[int] = _.events[_.timestamp].max()
+    events: DataFrame[Event] = has_many(lambda: True)
+```
+
+## Recursive relationship candidate inference
+
+Re-entering lookup for the same missing feature while inspecting a genuine `DataFrame` candidate
+must terminate instead of overflowing the inference stack.
+
+```py
+from chalk.features import DataFrame, _, features
+
+@features
+class Event:
+    value: int
+
+@features
+class User:
+    events: DataFrame[Event] = _.missing()  # error: [unresolved-attribute]
+```
