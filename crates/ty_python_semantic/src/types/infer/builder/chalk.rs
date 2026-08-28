@@ -33,6 +33,7 @@ struct ChalkFeaturePathKey<'db> {
 #[derive(Clone, Default)]
 pub(super) struct ChalkRefinements<'db> {
     paths: Vec<(ChalkFeaturePathKey<'db>, ChalkPathRefinement)>,
+    relationship_lookups: Vec<(Type<'db>, Name)>,
 }
 
 pub(super) struct ChalkIfThenElseRefinements<'db> {
@@ -459,61 +460,79 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
             return None;
         }
 
-        let module = parsed_module(self.db(), class.file(self.db())).load(self.db());
-        for (_, declarations) in
-            use_def_map(self.db(), body_scope).all_end_of_scope_symbol_declarations()
+        let lookup = (ty, Name::new(name));
+        if self
+            .chalk_refinements
+            .relationship_lookups
+            .contains(&lookup)
         {
-            let Some(assignment) = declarations
-                .filter_map(|declaration| {
-                    let definition = declaration.declaration.definition()?;
-                    let DefinitionKind::AnnotatedAssignment(assignment) =
-                        definition.kind(self.db())
-                    else {
-                        return None;
-                    };
-                    Some(assignment)
-                })
-                .next()
-            else {
-                continue;
-            };
-            let (ast::Expr::Subscript(annotation), Some(ast::Expr::Call(value))) =
-                (assignment.annotation(&module), assignment.value(&module))
-            else {
-                continue;
-            };
-
-            let mut speculative = self.speculate_without_diagnostics();
-            let dataframe_ty =
-                speculative.infer_expression(&annotation.value, TypeContext::default());
-            if !speculative.is_chalk_features_symbol(dataframe_ty, "DataFrame") {
-                continue;
-            }
-
-            let has_many_ty = speculative.infer_expression(&value.func, TypeContext::default());
-            if !speculative.is_chalk_features_symbol(has_many_ty, "has_many") {
-                continue;
-            }
-            let row_ty = speculative.infer_type_expression(&annotation.slice);
-            let row_is_features_class = row_ty
-                .nominal_class(self.db())
-                .and_then(|class| class.static_class_literal(self.db()))
-                .and_then(|(class, _)| class.dataclass_params(self.db()))
-                .is_some_and(|params| {
-                    params
-                        .flags(self.db())
-                        .contains(DataclassFlags::CHALK_FEATURES)
-                });
-            if row_is_features_class
-                && let Some(member) = row_ty
-                    .instance_member(self.db(), name)
-                    .ignore_possibly_undefined()
-            {
-                return Some(member);
-            }
+            return None;
         }
+        self.chalk_refinements
+            .relationship_lookups
+            .push(lookup.clone());
 
-        None
+        let result = 'lookup: {
+            let module = parsed_module(self.db(), class.file(self.db())).load(self.db());
+            for (_, declarations) in
+                use_def_map(self.db(), body_scope).all_end_of_scope_symbol_declarations()
+            {
+                let Some(assignment) = declarations
+                    .filter_map(|declaration| {
+                        let definition = declaration.declaration.definition()?;
+                        let DefinitionKind::AnnotatedAssignment(assignment) =
+                            definition.kind(self.db())
+                        else {
+                            return None;
+                        };
+                        Some(assignment)
+                    })
+                    .next()
+                else {
+                    continue;
+                };
+                let (ast::Expr::Subscript(annotation), Some(ast::Expr::Call(value))) =
+                    (assignment.annotation(&module), assignment.value(&module))
+                else {
+                    continue;
+                };
+
+                let mut speculative = self.speculate_without_diagnostics();
+                let dataframe_ty =
+                    speculative.infer_expression(&annotation.value, TypeContext::default());
+                if !speculative.is_chalk_features_symbol(dataframe_ty, "DataFrame") {
+                    continue;
+                }
+
+                let has_many_ty = speculative.infer_expression(&value.func, TypeContext::default());
+                if !speculative.is_chalk_features_symbol(has_many_ty, "has_many") {
+                    continue;
+                }
+                let row_ty = speculative.infer_type_expression(&annotation.slice);
+                let row_is_features_class = row_ty
+                    .nominal_class(self.db())
+                    .and_then(|class| class.static_class_literal(self.db()))
+                    .and_then(|(class, _)| class.dataclass_params(self.db()))
+                    .is_some_and(|params| {
+                        params
+                            .flags(self.db())
+                            .contains(DataclassFlags::CHALK_FEATURES)
+                    });
+                if row_is_features_class
+                    && let Some(member) = row_ty
+                        .instance_member(self.db(), name)
+                        .ignore_possibly_undefined()
+                {
+                    break 'lookup Some(member);
+                }
+            }
+
+            None
+        };
+
+        let active_lookup = self.chalk_refinements.relationship_lookups.pop();
+        debug_assert_eq!(active_lookup.as_ref(), Some(&lookup));
+        result
     }
 
     fn resolve_chalk_feature_path_from(
