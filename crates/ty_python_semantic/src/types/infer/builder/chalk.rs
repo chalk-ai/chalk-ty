@@ -486,10 +486,12 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
             let mut speculative = self.speculate_without_diagnostics();
             let dataframe_ty =
                 speculative.infer_expression(&annotation.value, TypeContext::default());
+            if !speculative.is_chalk_features_symbol(dataframe_ty, "DataFrame") {
+                continue;
+            }
+
             let has_many_ty = speculative.infer_expression(&value.func, TypeContext::default());
-            if !speculative.is_chalk_features_symbol(dataframe_ty, "DataFrame")
-                || !speculative.is_chalk_features_symbol(has_many_ty, "has_many")
-            {
+            if !speculative.is_chalk_features_symbol(has_many_ty, "has_many") {
                 continue;
             }
             let row_ty = speculative.infer_type_expression(&annotation.slice);
