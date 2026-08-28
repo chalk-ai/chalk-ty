@@ -59,9 +59,9 @@ pub(crate) struct Suppressions<'db> {
     pub(crate) problems: Box<[SuppressionProblem]>,
 }
 
-impl<'db> Suppressions<'db> {
+impl Suppressions<'_> {
     #[cfg(test)]
-    fn suppresses_function(&self, definition: Definition<'db>, code: SuppressionCode) -> bool {
+    fn suppresses_function(&self, definition: Definition<'_>, code: SuppressionCode) -> bool {
         self.function
             .iter()
             .any(|suppression| suppression.definition == definition && suppression.code == code)

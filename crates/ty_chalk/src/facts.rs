@@ -63,7 +63,7 @@ fn extract_file_facts(db: &dyn Db, file: File) -> FileFacts<'_> {
     FileFacts {
         resolver_roots: visitor.resolver_roots.into_boxed_slice(),
         calls: visitor.calls.into_boxed_slice(),
-        suppression_problems: suppressions.problems.into(),
+        suppression_problems: suppressions.problems,
     }
 }
 

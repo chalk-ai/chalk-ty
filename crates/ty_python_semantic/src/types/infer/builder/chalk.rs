@@ -474,21 +474,18 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
 
         let result = 'lookup: {
             let module = parsed_module(self.db(), class.file(self.db())).load(self.db());
-            for (_, declarations) in
+            for (_, mut declarations) in
                 use_def_map(self.db(), body_scope).all_end_of_scope_symbol_declarations()
             {
-                let Some(assignment) = declarations
-                    .filter_map(|declaration| {
-                        let definition = declaration.declaration.definition()?;
-                        let DefinitionKind::AnnotatedAssignment(assignment) =
-                            definition.kind(self.db())
-                        else {
-                            return None;
-                        };
-                        Some(assignment)
-                    })
-                    .next()
-                else {
+                let Some(assignment) = declarations.find_map(|declaration| {
+                    let definition = declaration.declaration.definition()?;
+                    let DefinitionKind::AnnotatedAssignment(assignment) =
+                        definition.kind(self.db())
+                    else {
+                        return None;
+                    };
+                    Some(assignment)
+                }) else {
                     continue;
                 };
                 let (ast::Expr::Subscript(annotation), Some(ast::Expr::Call(value))) =
@@ -739,9 +736,7 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
             let current = Type::instance(self.db(), root_class.default_specialization(self.db()));
             let resolved =
                 self.resolve_chalk_feature_path_from(path, root_ty, current, true, false, false)?;
-            let Some((_, terminal_ty)) = resolved.members.last() else {
-                return None;
-            };
+            let (_, terminal_ty) = resolved.members.last()?;
             terminal_types.push(*terminal_ty);
 
             let member_count = resolved.members.len();

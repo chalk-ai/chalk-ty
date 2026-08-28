@@ -638,13 +638,6 @@ impl<'db> Type<'db> {
         db: &'db dyn Db,
         actual: Type<'db>,
     ) -> bool {
-        let Type::ProtocolInstance(protocol) = self else {
-            return false;
-        };
-        if protocol.synthesized_kind(db) != Some(SynthesizedProtocolKind::ChalkFeatures) {
-            return false;
-        }
-
         fn single_selected_type<'db>(db: &'db dyn Db, ty: Type<'db>) -> Option<Type<'db>> {
             let Type::ProtocolInstance(protocol) = ty else {
                 return Some(ty);
@@ -669,6 +662,13 @@ impl<'db> Type<'db> {
                 }
             }
             selected
+        }
+
+        let Type::ProtocolInstance(protocol) = self else {
+            return false;
+        };
+        if protocol.synthesized_kind(db) != Some(SynthesizedProtocolKind::ChalkFeatures) {
+            return false;
         }
 
         single_selected_type(db, self).is_some_and(|expected| actual.is_assignable_to(db, expected))
