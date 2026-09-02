@@ -188,12 +188,21 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
                     return TypeAndQualifiers::declared(self.infer_type_expression(annotation));
                 }
                 match attribute.ctx {
-                    ast::ExprContext::Load => infer_name_or_attribute(
-                        self.infer_attribute_expression(attribute),
-                        annotation,
-                        self,
-                        pep_613_policy,
-                    ),
+                    ast::ExprContext::Load => {
+                        if self.in_chalk_features_class()
+                            && let Some(ty) =
+                                self.infer_chalk_feature_path_type_expression(annotation)
+                        {
+                            AnnotationExpressionInference::new(TypeAndQualifiers::declared(ty))
+                        } else {
+                            infer_name_or_attribute(
+                                self.infer_attribute_expression(attribute),
+                                annotation,
+                                self,
+                                pep_613_policy,
+                            )
+                        }
+                    }
                     ast::ExprContext::Invalid => AnnotationExpressionInference::new(
                         TypeAndQualifiers::declared(Type::unknown()),
                     ),

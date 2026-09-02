@@ -159,6 +159,35 @@ from chalk.features import _
 reveal_type(_.anything)  # revealed: Any
 ```
 
+## Feature references in feature annotations
+
+Feature fields can reference other features as their annotations, including forward references.
+Feature references remain invalid in variable annotations outside a feature class.
+
+```py
+from chalk.features import Primary, features
+
+@features
+class Account:
+    id: Primary[int]
+
+@features()
+class Transaction:
+    account_id: Account.id
+    user_id: "User.id"
+
+@features()
+class User:
+    id: Primary[int]
+
+reveal_type(Transaction.account_id)  # revealed: Resolved[int]
+reveal_type(Transaction().account_id)  # revealed: int
+reveal_type(Transaction.user_id)  # revealed: Resolved[int]
+reveal_type(Transaction().user_id)  # revealed: int
+
+module_value: User.id  # error: [invalid-type-form]
+```
+
 ## Relationship lookup rejects unrelated call-valued fields
 
 Resolving a feature that belongs to a has-many row must skip unrelated subscript-annotated fields
