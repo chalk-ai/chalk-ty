@@ -38,11 +38,14 @@ reveal_type(generic_context(SingleParamSpec))
 # revealed: ty_extensions._internal.GenericContext[P@TypeVarAndParamSpec, T@TypeVarAndParamSpec]
 reveal_type(generic_context(TypeVarAndParamSpec))
 
-# TODO: support `TypeVarTuple` properly (these should not reveal `None`)
-reveal_type(generic_context(SingleTypeVarTuple))  # revealed: None
-reveal_type(generic_context(TypeVarAndTypeVarTuple))  # revealed: None
-reveal_type(generic_context(StarredSingleTypeVarTuple))  # revealed: None
-reveal_type(generic_context(StarredTypeVarAndTypeVarTuple))  # revealed: None
+# revealed: ty_extensions._internal.GenericContext[Ts@SingleTypeVarTuple]
+reveal_type(generic_context(SingleTypeVarTuple))
+# revealed: ty_extensions._internal.GenericContext[T@TypeVarAndTypeVarTuple, Ts@TypeVarAndTypeVarTuple]
+reveal_type(generic_context(TypeVarAndTypeVarTuple))
+# revealed: ty_extensions._internal.GenericContext[Ts@StarredSingleTypeVarTuple]
+reveal_type(generic_context(StarredSingleTypeVarTuple))
+# revealed: ty_extensions._internal.GenericContext[T@StarredTypeVarAndTypeVarTuple, Ts@StarredTypeVarAndTypeVarTuple]
+reveal_type(generic_context(StarredTypeVarAndTypeVarTuple))
 ```
 
 Inheriting from `Generic` multiple times yields a `duplicate-base` diagnostic, just like any other
@@ -60,7 +63,8 @@ You cannot use the same typevar more than once.
 class RepeatedTypevar(Generic[T, T]): ...
 ```
 
-You can only specialize `typing.Generic` with typevars (TODO: or param specs or typevar tuples).
+You can only specialize `typing.Generic` with type variables, parameter specifications, or unpacked
+type variable tuples.
 
 ```py
 # error: [invalid-argument-type] "`<class 'int'>` is not a valid argument to `Generic`"
@@ -1168,6 +1172,35 @@ class Grault(Generic[Unpack[Us], Unpack[Ts2]]): ...
 # These are fine:
 class Ok1(Generic[U, *Ts]): ...
 class Ok2(Generic[U, Unpack[Ts]]): ...
+```
+
+## Specializing a variadic generic class
+
+```toml
+[environment]
+python-version = "3.11"
+```
+
+```py
+from typing_extensions import Generic, TypeVar, TypeVarTuple, Unpack
+
+T = TypeVar("T")
+S = TypeVar("S")
+Ts = TypeVarTuple("Ts")
+
+class Variadic(Generic[*Ts]): ...
+class Prefix(Generic[T, *Ts]): ...
+class Suffix(Generic[*Ts, T]): ...
+class Middle(Generic[T, *Ts, S]): ...
+
+reveal_type(Variadic[int, str]())  # revealed: Variadic[int, str]
+reveal_type(Prefix[int, str, bool]())  # revealed: Prefix[int, str, bool]
+reveal_type(Suffix[int, str, bool]())  # revealed: Suffix[int, str, bool]
+reveal_type(Middle[int, str, bool]())  # revealed: Middle[int, str, bool]
+reveal_type(Middle[Unpack[tuple[int, str]], bool]())  # revealed: Middle[int, str, bool]
+
+empty: Variadic[()]
+too_few: Middle[int]  # error: [invalid-type-arguments]
 ```
 
 [crtp]: https://en.wikipedia.org/wiki/Curiously_recurring_template_pattern

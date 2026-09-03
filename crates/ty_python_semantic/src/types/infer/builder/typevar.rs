@@ -676,6 +676,64 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         );
     }
 
+    pub(super) fn infer_legacy_typevartuple(
+        &mut self,
+        target: &ast::Expr,
+        call_expr: &ast::ExprCall,
+        definition: Definition<'db>,
+    ) -> Type<'db> {
+        let db = self.db();
+        let arguments = &call_expr.arguments;
+        if arguments.args.len() != 1
+            || !arguments.keywords.is_empty()
+            || arguments.args[0].is_starred_expr()
+        {
+            for argument in &arguments.args {
+                self.infer_expression(argument, TypeContext::default());
+            }
+            for keyword in &arguments.keywords {
+                self.infer_expression(&keyword.value, TypeContext::default());
+            }
+            return KnownClass::TypeVarTuple.to_instance(db);
+        }
+
+        let name_ty = self.infer_expression(&arguments.args[0], TypeContext::default());
+        let Some(name) = name_ty.as_string_literal().map(|name| name.value(db)) else {
+            return KnownClass::TypeVarTuple.to_instance(db);
+        };
+        let ast::Expr::Name(ast::ExprName {
+            id: target_name, ..
+        }) = target
+        else {
+            return KnownClass::TypeVarTuple.to_instance(db);
+        };
+
+        if name != target_name {
+            report_mismatched_type_name(
+                &self.context,
+                &arguments.args[0],
+                "TypeVarTuple",
+                target_name,
+                Some(name),
+                name_ty,
+            );
+        }
+
+        let identity = TypeVarIdentity::new(
+            db,
+            target_name,
+            Some(definition),
+            TypeVarKind::LegacyTypeVarTuple,
+        );
+        Type::KnownInstance(KnownInstanceType::TypeVar(TypeVarInstance::new(
+            db,
+            identity,
+            None,
+            Some(TypeVarVariance::Invariant),
+            None,
+        )))
+    }
+
     pub(super) fn infer_legacy_paramspec(
         &mut self,
         target: &ast::Expr,

@@ -221,6 +221,10 @@ impl<'db> TypeVarInstance<'db> {
         self.kind(db).is_paramspec()
     }
 
+    pub(crate) fn is_typevartuple(self, db: &'db dyn Db) -> bool {
+        self.kind(db).is_typevartuple()
+    }
+
     pub(crate) fn upper_bound(self, db: &'db dyn Db) -> Option<Type<'db>> {
         if let Some(TypeVarBoundOrConstraints::UpperBound(ty)) = self.bound_or_constraints(db) {
             Some(ty)
@@ -920,6 +924,10 @@ impl<'db> BoundTypeVarInstance<'db> {
         self.kind(db).is_paramspec()
     }
 
+    pub(crate) fn is_typevartuple(self, db: &'db dyn Db) -> bool {
+        self.kind(db).is_typevartuple()
+    }
+
     /// Returns a new bound typevar instance with the given `ParamSpec` attribute set.
     ///
     /// This method will also set an appropriate upper bound on the typevar, based on the
@@ -1297,6 +1305,8 @@ pub enum TypeVarKind {
     TypingSelf,
     /// `P = ParamSpec("P")`
     LegacyParamSpec,
+    /// `Ts = TypeVarTuple("Ts")`
+    LegacyTypeVarTuple,
     /// `def foo[**P]() -> None: ...`
     Pep695ParamSpec,
     /// `Alias: typing.TypeAlias = T`
@@ -1306,6 +1316,10 @@ pub enum TypeVarKind {
 impl TypeVarKind {
     pub(super) const fn is_paramspec(self) -> bool {
         matches!(self, Self::LegacyParamSpec | Self::Pep695ParamSpec)
+    }
+
+    pub(super) const fn is_typevartuple(self) -> bool {
+        matches!(self, Self::LegacyTypeVarTuple)
     }
 }
 

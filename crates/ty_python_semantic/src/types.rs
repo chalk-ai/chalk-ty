@@ -5979,6 +5979,9 @@ impl<'db> Type<'db> {
                 KnownInstanceType::TypeAliasType(alias) => Ok(Type::TypeAlias(*alias)),
                 KnownInstanceType::NewType(newtype) => Ok(Type::NewTypeInstance(*newtype)),
                 KnownInstanceType::TypeVar(typevar) => {
+                    if typevar.is_typevartuple(db) {
+                        return Ok(Type::Dynamic(DynamicType::TodoTypeVarTuple));
+                    }
                     if !inference_flags.contains(InferenceFlags::ALLOW_PARAMSPEC_TYPE_EXPR)
                         && typevar.is_paramspec(db)
                     {

@@ -763,14 +763,14 @@ pub(super) fn report_missing_type_arguments<'db>(
             // Don't warn if all type parameters have defaults (PEP 696).
             if generic_context
                 .variables(db)
-                .all(|tv| tv.default_type(db).is_some())
+                .all(|tv| tv.default_type(db).is_some() || tv.is_typevartuple(db))
             {
                 return;
             }
 
             let required_count = generic_context
                 .variables(db)
-                .filter(|tv| tv.default_type(db).is_none())
+                .filter(|tv| tv.default_type(db).is_none() && !tv.is_typevartuple(db))
                 .count();
 
             if let Some(builder) = context.report_lint(&MISSING_TYPE_ARGUMENT, annotation) {
@@ -3689,6 +3689,7 @@ pub(crate) fn report_shadowed_type_variable<'db>(
         | TypeVarKind::TypingSelf
         | TypeVarKind::Pep613Alias => "type variable",
         TypeVarKind::LegacyParamSpec | TypeVarKind::Pep695ParamSpec => "ParamSpec",
+        TypeVarKind::LegacyTypeVarTuple => "TypeVarTuple",
     };
     let mut diagnostic = builder.into_diagnostic(format_args!(
         "Generic {kind} `{name}` uses {typevar_kind} `{typevar_name}` already bound by an enclosing scope",

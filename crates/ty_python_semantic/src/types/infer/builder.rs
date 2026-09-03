@@ -3118,6 +3118,9 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                                 definition,
                                 paramspec_class,
                             ),
+                            Some(KnownClass::TypeVarTuple) => {
+                                self.infer_legacy_typevartuple(target, call_expr, definition)
+                            }
                             Some(KnownClass::NewType) => {
                                 self.infer_newtype_expression(target, call_expr, definition)
                             }

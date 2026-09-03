@@ -27,7 +27,7 @@ use crate::types::generics::{GenericContext, Specialization};
 use crate::types::signatures::{
     CallableSignature, Parameter, Parameters, ParametersKind, Signature,
 };
-use crate::types::tuple::TupleSpec;
+use crate::types::tuple::{Tuple, TupleSpec};
 use crate::types::typevar::BoundTypeVarIdentity;
 use crate::types::visitor::TypeVisitor;
 use crate::types::{
@@ -1862,6 +1862,8 @@ impl<'db> DisplayGenericContext<'_, 'db> {
             let typevar = bound_typevar.typevar(self.db);
             if typevar.is_paramspec(self.db) {
                 f.write_str("**")?;
+            } else if typevar.is_typevartuple(self.db) {
+                f.write_char('*')?;
             }
             write!(
                 f.with_type(Type::TypeVar(bound_typevar)),
@@ -1948,12 +1950,33 @@ impl<'db> DisplaySpecialization<'db> {
     fn fmt_normal(&self, f: &mut TypeWriter<'_, '_, 'db>) -> fmt::Result {
         f.write_char('[')?;
         let types = self.specialization.types(self.db);
-        for (idx, ty) in types.iter().enumerate() {
-            if idx > 0 {
+        let variables = self
+            .specialization
+            .generic_context(self.db)
+            .variables(self.db);
+        let mut first = true;
+        for (typevar, ty) in variables.zip(types) {
+            if typevar.is_typevartuple(self.db)
+                && let Some(tuple) = ty.exact_tuple_instance_spec(self.db)
+                && let Tuple::Fixed(elements) = tuple.as_ref()
+            {
+                for element in elements.iter_all_elements() {
+                    if !first {
+                        f.write_str(", ")?;
+                    }
+                    element
+                        .display_with(self.db, self.settings.clone())
+                        .fmt_detailed(f)?;
+                    first = false;
+                }
+                continue;
+            }
+            if !first {
                 f.write_str(", ")?;
             }
             ty.display_with(self.db, self.settings.clone())
                 .fmt_detailed(f)?;
+            first = false;
         }
         if self.tuple_specialization.is_yes() {
             f.write_str(", ...")?;
@@ -3153,6 +3176,8 @@ impl<'db> FmtDetailed<'db> for DisplayKnownInstanceRepr<'db> {
             KnownInstanceType::TypeVar(typevar_instance) => {
                 if typevar_instance.kind(self.db).is_paramspec() {
                     f.with_type(ty).write_str("ParamSpec")
+                } else if typevar_instance.kind(self.db).is_typevartuple() {
+                    f.with_type(ty).write_str("TypeVarTuple")
                 } else {
                     f.with_type(ty).write_str("TypeVar")
                 }
