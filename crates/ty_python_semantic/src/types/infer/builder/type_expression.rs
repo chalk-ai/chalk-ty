@@ -947,7 +947,7 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
         slice: &ast::Expr,
         value_ty: Type<'db>,
     ) -> Type<'db> {
-        if let Some(ty) = self.infer_chalk_features_type_expression(slice, value_ty) {
+        if let Some(ty) = self.infer_chalk_subscript_type_expression(subscript, slice, value_ty) {
             return ty;
         }
 

@@ -1,4 +1,3 @@
-use ruff_db::parsed::parsed_module;
 use ruff_python_ast::{self as ast, AnyNodeRef, name::Name};
 use ty_module_resolver::{ModuleName, file_to_module, resolve_module};
 use ty_python_core::{definition::DefinitionKind, place_table, scope::ScopeKind, use_def_map};
@@ -8,9 +7,9 @@ use crate::{
     place::{Place, imported_symbol, place_from_declarations},
     reachability::DeclarationsIteratorExtension,
     types::{
-        DataclassFlags, MemberLookupPolicy, Type, TypeAndQualifiers, TypeContext, TypeQualifiers,
+        DataclassFlags, MemberLookupPolicy, Type, TypeAndQualifiers, TypeQualifiers,
         infer::{TypeInferenceBuilder, nearest_enclosing_class},
-        tuple::TupleType,
+        tuple::{Tuple, TupleType},
     },
 };
 
@@ -33,7 +32,7 @@ struct ChalkFeaturePathKey<'db> {
 #[derive(Clone, Default)]
 pub(super) struct ChalkRefinements<'db> {
     paths: Vec<(ChalkFeaturePathKey<'db>, ChalkPathRefinement)>,
-    relationship_lookups: Vec<(Type<'db>, Name)>,
+    underscore_roots: Vec<Type<'db>>,
 }
 
 pub(super) struct ChalkIfThenElseRefinements<'db> {
@@ -107,6 +106,20 @@ impl<'db> FeatureShape<'db> {
 }
 
 impl<'db> TypeInferenceBuilder<'db, '_> {
+    fn chalk_underscore_root(&self) -> Option<Type<'db>> {
+        if let Some(root) = self.chalk_refinements.underscore_roots.last() {
+            return Some(*root);
+        }
+        if !self.in_chalk_features_class() {
+            return None;
+        }
+        let class = nearest_enclosing_class(self.db(), self.index, self.scope())?;
+        Some(Type::instance(
+            self.db(),
+            class.default_specialization(self.db()),
+        ))
+    }
+
     fn chalk_feature_path_key(
         &self,
         path: &FeaturePath<'_>,
@@ -115,8 +128,8 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
     ) -> Option<ChalkFeaturePathKey<'db>> {
         let root = if self.is_chalk_features_class(root_ty) {
             root_ty
-        } else if self.is_chalk_features_symbol(root_ty, "_") && self.in_chalk_features_class() {
-            Type::ClassLiteral(nearest_enclosing_class(self.db(), self.index, self.scope())?.into())
+        } else if self.is_chalk_features_symbol(root_ty, "_") {
+            self.chalk_underscore_root()?
         } else {
             return None;
         };
@@ -317,6 +330,63 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
         })
     }
 
+    fn chalk_subscript_underscore_root(&self, receiver_ty: Type<'db>) -> Option<Type<'db>> {
+        let db = self.db();
+        let dataframe = self
+            .chalk_features_symbol("DataFrame")?
+            .as_class_literal()?;
+        let mut inner = self.chalk_symbolic_inner(receiver_ty)?;
+        while let Some(nested) = self.chalk_symbolic_inner(inner) {
+            inner = nested;
+        }
+        let packed = inner
+            .specialization_of(db, dataframe.as_static()?)?
+            .types(db)
+            .first()
+            .copied()?;
+        let packed = packed.exact_tuple_instance_spec(db)?;
+        let Tuple::Fixed(arguments) = packed.as_ref() else {
+            return None;
+        };
+        let [root] = arguments.elements_slice() else {
+            return None;
+        };
+        let (class, _) = root.nominal_class(db)?.static_class_literal(db)?;
+        class
+            .dataclass_params(db)
+            .is_some_and(|params| params.flags(db).contains(DataclassFlags::CHALK_FEATURES))
+            .then_some(*root)
+    }
+
+    pub(super) fn infer_chalk_subscript<T>(
+        &mut self,
+        receiver_ty: Type<'db>,
+        infer: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let Some(root) = self.chalk_subscript_underscore_root(receiver_ty) else {
+            return infer(self);
+        };
+        let original_len = self.chalk_refinements.underscore_roots.len();
+        self.chalk_refinements.underscore_roots.push(root);
+        let result = infer(self);
+        self.chalk_refinements
+            .underscore_roots
+            .truncate(original_len);
+        result
+    }
+
+    fn infer_chalk_feature_path_subscript_type_expression(
+        &mut self,
+        subscript: &ast::ExprSubscript,
+        receiver_ty: Type<'db>,
+    ) -> Option<Type<'db>> {
+        self.chalk_subscript_underscore_root(receiver_ty)?;
+        let ty = self.infer_chalk_subscript(receiver_ty, |builder| {
+            builder.infer_subscript_load_impl(receiver_ty, subscript)
+        });
+        Some(self.chalk_symbolic_inner(ty).unwrap_or(ty))
+    }
+
     fn chalk_windowed_inner(&self, ty: Type<'db>) -> Option<Type<'db>> {
         let module_name = ModuleName::new_static(CHALK_STREAMS_MODULE)?;
         let module = resolve_module(self.db(), self.file(), &module_name)?;
@@ -403,6 +473,8 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
     }
 
     fn chalk_feature_member(&mut self, ty: Type<'db>, name: &str) -> Option<Type<'db>> {
+        let db = self.db();
+        let ty = ty.filter_union(db, |element| !element.is_none(db));
         let (class, specialization) = ty
             .nominal_class(self.db())?
             .static_class_literal(self.db())?;
@@ -454,82 +526,7 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
             return Some(member);
         }
 
-        // The annotation expressions below must be inferred in their owning class-body scope.
-        // This fallback is specifically for `_` expressions in that surrounding feature class.
-        if body_scope != self.scope() {
-            return None;
-        }
-
-        let lookup = (ty, Name::new(name));
-        if self
-            .chalk_refinements
-            .relationship_lookups
-            .contains(&lookup)
-        {
-            return None;
-        }
-        self.chalk_refinements
-            .relationship_lookups
-            .push(lookup.clone());
-
-        let result = 'lookup: {
-            let module = parsed_module(self.db(), class.file(self.db())).load(self.db());
-            for (_, mut declarations) in
-                use_def_map(self.db(), body_scope).all_end_of_scope_symbol_declarations()
-            {
-                let Some(assignment) = declarations.find_map(|declaration| {
-                    let definition = declaration.declaration.definition()?;
-                    let DefinitionKind::AnnotatedAssignment(assignment) =
-                        definition.kind(self.db())
-                    else {
-                        return None;
-                    };
-                    Some(assignment)
-                }) else {
-                    continue;
-                };
-                let (ast::Expr::Subscript(annotation), Some(ast::Expr::Call(value))) =
-                    (assignment.annotation(&module), assignment.value(&module))
-                else {
-                    continue;
-                };
-
-                let mut speculative = self.speculate_without_diagnostics();
-                let dataframe_ty =
-                    speculative.infer_expression(&annotation.value, TypeContext::default());
-                if !speculative.is_chalk_features_symbol(dataframe_ty, "DataFrame") {
-                    continue;
-                }
-
-                let has_many_ty = speculative.infer_expression(&value.func, TypeContext::default());
-                if !speculative.is_chalk_features_symbol(has_many_ty, "has_many") {
-                    continue;
-                }
-                let row_ty = speculative.infer_type_expression(&annotation.slice);
-                let row_is_features_class = row_ty
-                    .nominal_class(self.db())
-                    .and_then(|class| class.static_class_literal(self.db()))
-                    .and_then(|(class, _)| class.dataclass_params(self.db()))
-                    .is_some_and(|params| {
-                        params
-                            .flags(self.db())
-                            .contains(DataclassFlags::CHALK_FEATURES)
-                    });
-                if row_is_features_class
-                    && let Some(member) = row_ty
-                        .instance_member(self.db(), name)
-                        .ignore_possibly_undefined()
-                {
-                    break 'lookup Some(member);
-                }
-            }
-
-            None
-        };
-
-        let active_lookup = self.chalk_refinements.relationship_lookups.pop();
-        debug_assert_eq!(active_lookup.as_ref(), Some(&lookup));
-        result
+        None
     }
 
     fn resolve_chalk_feature_path_from(
@@ -629,9 +626,7 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
                 ),
                 false,
             )
-        } else if speculative.is_chalk_features_symbol(root_ty, "_")
-            && speculative.in_chalk_features_class()
-        {
+        } else if speculative.is_chalk_features_symbol(root_ty, "_") {
             let first_member = &path.members[0].1.id;
             if !root_ty
                 .member_lookup_with_policy(
@@ -644,15 +639,8 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
             {
                 return None;
             }
-            let class =
-                nearest_enclosing_class(speculative.db(), speculative.index, speculative.scope())?;
-            (
-                Type::instance(
-                    speculative.db(),
-                    class.default_specialization(speculative.db()),
-                ),
-                true,
-            )
+            let current = speculative.chalk_underscore_root()?;
+            (current, true)
         } else {
             return None;
         };
@@ -686,11 +674,18 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
         }
     }
 
-    pub(super) fn infer_chalk_features_type_expression(
+    pub(super) fn infer_chalk_subscript_type_expression(
         &mut self,
+        subscript: &ast::ExprSubscript,
         slice: &ast::Expr,
         value_ty: Type<'db>,
     ) -> Option<Type<'db>> {
+        if let Some(ty) =
+            self.infer_chalk_feature_path_subscript_type_expression(subscript, value_ty)
+        {
+            return Some(ty);
+        }
+
         if !self.is_chalk_features_symbol(value_ty, "Features") {
             return None;
         }

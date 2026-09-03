@@ -77,15 +77,13 @@ class User(Base):
     )
     combined_match: bool | None = (_.HAS_ITIN["all"] > 0) & (_.HAS_SSN_MATCH_DOB["all"] > 0)
     normal_underscore_member: datetime = _.chalk_window
-    record_email: str = _.standardized_email
-
+    relationship_member_without_receiver: str = _.standardized_email  # error: [unresolved-attribute]
     bad: int = _.email  # error: [invalid-assignment] "Object of type `str` is not assignable to `int`"
     missing: str = _.does_not_exist  # error: [unresolved-attribute]
 
     reveal_type(_.email)  # revealed: Resolved[str]
     reveal_type(_.primary_email)  # revealed: Resolved[str]
     reveal_type(_.chalk_window)  # revealed: datetime
-    reveal_type(_.standardized_national_id)  # revealed: Resolved[bytes]
     reveal_type(_.HAS_ITIN["all"] + _.HAS_SSN_MATCH_DOB["all"])  # revealed: Resolved[int]
     reveal_type(_.HAS_ITIN["all"] + 1)  # revealed: Resolved[int]
     reveal_type(1 + _.HAS_ITIN["all"])  # revealed: Resolved[int]
@@ -188,39 +186,82 @@ reveal_type(Transaction().user_id)  # revealed: int
 module_value: User.id  # error: [invalid-type-form]
 ```
 
-## Relationship lookup rejects unrelated call-valued fields
+## Receiver-scoped relationship subscripts
 
-Resolving a feature that belongs to a has-many row must skip unrelated subscript-annotated fields
-without inferring their call-valued initializers.
+Within a Chalk relationship subscript, `_` resolves against the row type addressed by the complete
+receiver path. This applies to underscore-rooted paths inside feature classes and explicit
+feature-rooted paths outside them. A member on an unrelated relationship cannot satisfy the lookup.
 
 ```py
-from typing import Optional
+from datetime import datetime
 
 from chalk.features import DataFrame, _, features, has_many
 
 @features
 class Event:
-    timestamp: int
+    timestamp: datetime
+
+@features
+class Purchase:
+    amount: str
 
 @features
 class User:
-    latest: Optional[int] = _.events[_.timestamp].max()
+    id: int
+    bare_events: DataFrame[Event]
     events: DataFrame[Event] = has_many(lambda: True)
+    purchases: DataFrame[Purchase] = has_many(lambda: True)
+
+    _.bare_events[_.timestamp]
+    _.events[_.timestamp, _.timestamp > _.chalk_window, _.timestamp <= _.chalk_now]
+    _.events[_.amount]  # error: [unresolved-attribute]
+
+def events_resolver(events: User.events[_.timestamp]) -> None: ...
 ```
 
-## Recursive relationship candidate inference
+Explicit feature paths retain the receiver context through optional intermediate relationships and
+forward-referenced row types. Nested subscripts replace the context with their immediate receiver.
 
-Re-entering lookup for the same missing feature while inspecting a genuine `DataFrame` candidate
-must terminate instead of overflowing the inference stack.
+```py
+from chalk.features import DataFrame, _, features
+
+@features
+class PaymentAccount:
+    charges: "DataFrame[Charge]"
+
+@features
+class Account:
+    payment_account: PaymentAccount | None
+
+@features
+class Driver:
+    account: Account
+
+@features
+class Charge:
+    risk_score: int | None
+
+def charges_resolver(
+    charges: Driver.account.payment_account.charges[_.risk_score],
+) -> None: ...
+
+Driver.account.payment_account.charges[_.does_not_exist]  # error: [unresolved-attribute]
+```
 
 ```py
 from chalk.features import DataFrame, _, features
 
 @features
 class Event:
-    value: int
+    timestamp: int
+
+@features
+class Group:
+    events: DataFrame[Event]
 
 @features
 class User:
-    events: DataFrame[Event] = _.missing()  # error: [unresolved-attribute]
+    groups: DataFrame[Group]
+
+    _.groups[_.events[_.timestamp]]
 ```

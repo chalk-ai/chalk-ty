@@ -162,7 +162,9 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             return self.infer_explicit_type_alias_specialization(subscript, value_ty, false);
         }
 
-        self.infer_subscript_load_impl(value_ty, subscript)
+        self.infer_chalk_subscript(value_ty, |builder| {
+            builder.infer_subscript_load_impl(value_ty, subscript)
+        })
     }
 
     pub(super) fn infer_subscript_load_impl(
