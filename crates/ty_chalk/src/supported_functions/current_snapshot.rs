@@ -1636,7 +1636,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "os.environ".to_string(),
+                        name: "os._Environ".to_string(),
                     },
                     None,
                     false,
@@ -6827,7 +6827,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.levenshtein".to_string(),
+                        name: "textdistance.algorithms.edit_based.Levenshtein".to_string(),
                     },
                     None,
                     false,
@@ -6839,7 +6839,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.hamming".to_string(),
+                        name: "textdistance.algorithms.edit_based.Hamming".to_string(),
                     },
                     None,
                     false,
@@ -6851,7 +6851,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.jaro_winkler".to_string(),
+                        name: "textdistance.algorithms.edit_based.JaroWinkler".to_string(),
                     },
                     None,
                     false,
@@ -6863,7 +6863,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.jaro_winkler".to_string(),
+                        name: "textdistance.algorithms.edit_based.JaroWinkler".to_string(),
                     },
                     None,
                     false,
@@ -6876,7 +6876,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.jaro".to_string(),
+                        name: "textdistance.algorithms.edit_based.Jaro".to_string(),
                     },
                     None,
                     false,
@@ -6888,7 +6888,8 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.ratcliff_obershelp".to_string(),
+                        name: "textdistance.algorithms.sequence_based.RatcliffObershelp"
+                            .to_string(),
                     },
                     None,
                     false,
@@ -6900,7 +6901,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.lcsseq".to_string(),
+                        name: "textdistance.algorithms.sequence_based.LCSSeq".to_string(),
                     },
                     None,
                     false,
@@ -6917,7 +6918,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.levenshtein".to_string(),
+                        name: "textdistance.algorithms.edit_based.Levenshtein".to_string(),
                     },
                     None,
                     false,
@@ -6929,7 +6930,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.hamming".to_string(),
+                        name: "textdistance.algorithms.edit_based.Hamming".to_string(),
                     },
                     None,
                     false,
@@ -6941,7 +6942,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.jaro_winkler".to_string(),
+                        name: "textdistance.algorithms.edit_based.JaroWinkler".to_string(),
                     },
                     None,
                     false,
@@ -6953,7 +6954,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.jaro_winkler".to_string(),
+                        name: "textdistance.algorithms.edit_based.JaroWinkler".to_string(),
                     },
                     None,
                     false,
@@ -6966,7 +6967,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.jaro".to_string(),
+                        name: "textdistance.algorithms.edit_based.Jaro".to_string(),
                     },
                     None,
                     false,
@@ -6978,7 +6979,8 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.ratcliff_obershelp".to_string(),
+                        name: "textdistance.algorithms.sequence_based.RatcliffObershelp"
+                            .to_string(),
                     },
                     None,
                     false,
@@ -6990,7 +6992,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.lcsseq".to_string(),
+                        name: "textdistance.algorithms.sequence_based.LCSSeq".to_string(),
                     },
                     None,
                     false,
@@ -7007,7 +7009,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.levenshtein".to_string(),
+                        name: "textdistance.algorithms.edit_based.Levenshtein".to_string(),
                     },
                     None,
                     false,
@@ -7019,7 +7021,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.hamming".to_string(),
+                        name: "textdistance.algorithms.edit_based.Hamming".to_string(),
                     },
                     None,
                     false,
@@ -7031,7 +7033,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.jaro_winkler".to_string(),
+                        name: "textdistance.algorithms.edit_based.JaroWinkler".to_string(),
                     },
                     None,
                     false,
@@ -7043,7 +7045,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.jaro_winkler".to_string(),
+                        name: "textdistance.algorithms.edit_based.JaroWinkler".to_string(),
                     },
                     None,
                     false,
@@ -7056,7 +7058,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.jaro".to_string(),
+                        name: "textdistance.algorithms.edit_based.Jaro".to_string(),
                     },
                     None,
                     false,
@@ -7068,7 +7070,8 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.ratcliff_obershelp".to_string(),
+                        name: "textdistance.algorithms.sequence_based.RatcliffObershelp"
+                            .to_string(),
                     },
                     None,
                     false,
@@ -7080,7 +7083,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.lcsseq".to_string(),
+                        name: "textdistance.algorithms.sequence_based.LCSSeq".to_string(),
                     },
                     None,
                     false,
@@ -7097,7 +7100,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.levenshtein".to_string(),
+                        name: "textdistance.algorithms.edit_based.Levenshtein".to_string(),
                     },
                     None,
                     false,
@@ -7109,7 +7112,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.hamming".to_string(),
+                        name: "textdistance.algorithms.edit_based.Hamming".to_string(),
                     },
                     None,
                     false,
@@ -7121,7 +7124,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.jaro_winkler".to_string(),
+                        name: "textdistance.algorithms.edit_based.JaroWinkler".to_string(),
                     },
                     None,
                     false,
@@ -7133,7 +7136,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.jaro_winkler".to_string(),
+                        name: "textdistance.algorithms.edit_based.JaroWinkler".to_string(),
                     },
                     None,
                     false,
@@ -7146,7 +7149,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.jaro".to_string(),
+                        name: "textdistance.algorithms.edit_based.Jaro".to_string(),
                     },
                     None,
                     false,
@@ -7158,7 +7161,8 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.ratcliff_obershelp".to_string(),
+                        name: "textdistance.algorithms.sequence_based.RatcliffObershelp"
+                            .to_string(),
                     },
                     None,
                     false,
@@ -7170,7 +7174,7 @@ pub(super) fn supported_funcs() -> SupportedFuncs {
                 arg(
                     SupportedTy::Module {
                         nullable: false,
-                        name: "textdistance.lcsseq".to_string(),
+                        name: "textdistance.algorithms.sequence_based.LCSSeq".to_string(),
                     },
                     None,
                     false,
