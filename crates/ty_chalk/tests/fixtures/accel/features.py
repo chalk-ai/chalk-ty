@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import difflib
 import enum
 import hashlib
 import json
 import math
+import os
 import re
 from collections import Counter
 from typing import TypedDict
@@ -37,6 +40,8 @@ def resolver() -> None:
     bool(payload)
     values: list[int] = []
     values.append(1)
+    os.environ.get("KEY")
+    os.environ.get("KEY", "default")
 
     math.gcd(4, 2)
     json.load(1)
@@ -47,6 +52,7 @@ def resolver() -> None:
     counts: Counter[str] = Counter(["x"])
     len(counts)
     counts.values()
+    os.environ.get(1)
 
     math.sqrt("x")
     json.loads(1)

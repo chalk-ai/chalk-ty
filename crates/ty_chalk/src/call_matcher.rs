@@ -4,7 +4,7 @@ use ty_python_semantic::Db;
 use ty_python_semantic::chalk::{
     CallDefinitionOriginKind, CallModuleProvenance, CallTarget, ChalkClassRelation, ChalkTypeShape,
     Definition, KnownCallTarget, ModuleOrigin, chalk_call_definition_origin,
-    chalk_receiver_module_relation, chalk_type_shape,
+    chalk_exact_instance_class, chalk_receiver_module_relation, chalk_type_shape,
 };
 use ty_python_semantic::types::Type;
 
@@ -597,7 +597,15 @@ impl<'db> Matcher<'db> {
                     }
                 }
                 ActualType::Native(actual) => {
-                    match chalk_receiver_module_relation(self.db, actual, name) {
+                    let mut relation = chalk_receiver_module_relation(self.db, actual, name);
+                    if relation == ChalkClassRelation::NoMatch
+                        && let Some((module, class)) = name.rsplit_once('.')
+                        && chalk_exact_instance_class(self.db, actual, module, class)
+                            == ChalkClassRelation::Match
+                    {
+                        relation = ChalkClassRelation::Match;
+                    }
+                    match relation {
                         ChalkClassRelation::Match => TypeMatch::Match,
                         ChalkClassRelation::NoMatch => TypeMatch::NoMatch,
                         ChalkClassRelation::Unavailable => TypeMatch::Inconclusive,
@@ -668,14 +676,20 @@ fn is_chalk_namespace(module: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use ruff_db::Db as _;
     use ruff_db::files::{File, system_path_to_file};
     use ruff_db::parsed::parsed_module;
     use ruff_db::system::{
         DbWithTestSystem as _, DbWithWritableSystem as _, SystemPath, SystemPathBuf,
     };
-    use ruff_python_ast as ast;
+    use ruff_python_ast::{self as ast, PythonVersion};
+    use ty_module_resolver::SearchPathSettings;
     use ty_project::{ProjectMetadata, TestDb};
-    use ty_python_semantic::{HasType, SemanticModel};
+    use ty_python_core::platform::PythonPlatform;
+    use ty_python_core::program::{FallibleStrategy, Program, ProgramSettings};
+    use ty_python_semantic::{
+        HasType, PythonVersionSource, PythonVersionWithSource, SemanticModel,
+    };
 
     use super::{
         CallKind, CallMatch, CallMatchIdentity, CallNoMatchReason, KnownCallTarget,
@@ -731,6 +745,48 @@ mod tests {
         }
         db.write_file(SystemPath::new(main_path), main).unwrap();
         let file = system_path_to_file(&db, main_path).unwrap();
+        (db, file)
+    }
+
+    fn setup_with_site_packages(main: &str, files: &[(&str, &str)]) -> (TestDb, File) {
+        let project = ProjectMetadata::new("test", SystemPathBuf::from("/src"));
+        let mut db = TestDb::new(project);
+        for path in ["/src", "/site-packages"] {
+            db.memory_file_system()
+                .create_directory_all(SystemPath::new(path))
+                .unwrap();
+        }
+        for (path, source) in files {
+            if let Some(parent) = SystemPath::new(path).parent() {
+                db.memory_file_system()
+                    .create_directory_all(parent)
+                    .unwrap();
+            }
+            db.write_file(SystemPath::new(path), source).unwrap();
+        }
+        db.write_file(SystemPath::new("/src/main.py"), main)
+            .unwrap();
+        let search_paths = SearchPathSettings {
+            extra_paths: Vec::new(),
+            src_roots: vec![SystemPathBuf::from("/src")],
+            custom_typeshed: None,
+            site_packages_paths: vec![SystemPathBuf::from("/site-packages")],
+            real_stdlib_path: None,
+        }
+        .to_search_paths(db.system(), db.vendored(), &FallibleStrategy)
+        .unwrap();
+        Program::from_settings(
+            &db,
+            ProgramSettings {
+                python_version: PythonVersionWithSource {
+                    version: PythonVersion::latest_ty(),
+                    source: PythonVersionSource::Default,
+                },
+                python_platform: PythonPlatform::default(),
+                search_paths,
+            },
+        );
+        let file = system_path_to_file(&db, "/src/main.py").unwrap();
         (db, file)
     }
 
@@ -1280,6 +1336,116 @@ missing()
                 "call {index}"
             );
         }
+    }
+
+    #[test]
+    fn public_instance_paths_match_native_registry_receivers() {
+        const EDIT_BASED: &str = r#"
+class Hamming:
+    def distance(self, first: str, second: str) -> int: ...
+
+class Jaro:
+    def distance(self, first: str, second: str) -> float: ...
+
+class JaroWinkler:
+    def distance(self, first: str, second: str) -> float: ...
+
+class Levenshtein:
+    def distance(self, first: str, second: str) -> int: ...
+"#;
+        const SEQUENCE_BASED: &str = r#"
+class LCSSeq:
+    def distance(self, first: str, second: str) -> int: ...
+
+class RatcliffObershelp:
+    def distance(self, first: str, second: str) -> float: ...
+"#;
+        const INIT: &str = r#"
+from .algorithms.edit_based import Hamming, Jaro, JaroWinkler, Levenshtein
+from .algorithms.sequence_based import LCSSeq, RatcliffObershelp
+
+class Impostor:
+    def distance(self, first: str, second: str) -> int: ...
+
+hamming = Hamming()
+impostor = Impostor()
+jaro = Jaro()
+jaro_winkler = JaroWinkler()
+lcsseq = LCSSeq()
+levenshtein = Levenshtein()
+ratcliff_obershelp = RatcliffObershelp()
+"#;
+        let (db, file) = setup_with_site_packages(
+            r#"
+import os
+import textdistance
+from confluent_kafka import serialization
+
+os.environ.get("KEY")
+textdistance.hamming.distance("a", "b")
+textdistance.jaro.distance("a", "b")
+textdistance.jaro_winkler.distance("a", "b")
+textdistance.lcsseq.distance("a", "b")
+textdistance.levenshtein.distance("a", "b")
+textdistance.ratcliff_obershelp.distance("a", "b")
+serialization.SerializationContext("topic", "field")
+textdistance.impostor.distance("a", "b")
+"#,
+            &[
+                ("/site-packages/confluent_kafka/__init__.py", ""),
+                ("/site-packages/confluent_kafka/py.typed", ""),
+                (
+                    "/site-packages/confluent_kafka/serialization.py",
+                    "def SerializationContext(topic: str, field: str): ...\n",
+                ),
+                ("/site-packages/textdistance/__init__.py", INIT),
+                ("/site-packages/textdistance/py.typed", ""),
+                ("/site-packages/textdistance/algorithms/__init__.py", ""),
+                (
+                    "/site-packages/textdistance/algorithms/edit_based.py",
+                    EDIT_BASED,
+                ),
+                (
+                    "/site-packages/textdistance/algorithms/sequence_based.py",
+                    SEQUENCE_BASED,
+                ),
+            ],
+        );
+
+        for (index, name) in std::iter::once("get")
+            .chain(std::iter::repeat_n("distance", 6))
+            .enumerate()
+        {
+            assert_eq!(
+                summarize(call_matches(&db, file, index)),
+                [MatchSummary::Match {
+                    identity: IdentitySummary::Definition,
+                    kind: CallKind::Method,
+                    name: name.into(),
+                    receiver_parameter: Some(0),
+                }],
+                "call {index}"
+            );
+        }
+        assert_eq!(
+            summarize(call_matches(&db, file, 7)),
+            [MatchSummary::Match {
+                identity: IdentitySummary::Definition,
+                kind: CallKind::Method,
+                name: "SerializationContext".into(),
+                receiver_parameter: Some(0),
+            }]
+        );
+        assert_eq!(
+            summarize(call_matches(&db, file, 8)),
+            [MatchSummary::NoMatch {
+                identity: IdentitySummary::Definition,
+                kind: CallKind::Method,
+                name: "distance".into(),
+                receiver_parameter: Some(0),
+                reason: CallNoMatchReason::SignatureMismatch,
+            }]
+        );
     }
 
     #[test]
