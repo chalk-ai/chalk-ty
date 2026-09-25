@@ -78,6 +78,8 @@ fn accel_behavioral_matrix() {
             "math.sqrt(\"x\")",
             "json.loads(1)",
             "re.search(1, \"abc\")",
+            "timedelta(days=3)",
+            "datetime.timedelta(days=3)",
         ]
     );
 
@@ -92,6 +94,8 @@ fn accel_behavioral_matrix() {
         (CallNoMatchReason::SignatureMismatch, true),
         (CallNoMatchReason::SignatureMismatch, true),
         (CallNoMatchReason::SignatureMismatch, true),
+        (CallNoMatchReason::MissingRegistryEntry, false),
+        (CallNoMatchReason::MissingRegistryEntry, false),
     ]) {
         let details = diagnostic
             .unsupported_function_details()

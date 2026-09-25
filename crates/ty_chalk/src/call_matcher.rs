@@ -363,29 +363,35 @@ impl<'db> Matcher<'db> {
         }
 
         if origin.kind == CallDefinitionOriginKind::ClassConstructor {
-            if origin.ownership_origin != ModuleOrigin::StandardLibrary
-                || origin.module.as_ref() != "builtins"
+            if !matches!(
+                origin.ownership_origin,
+                ModuleOrigin::StandardLibrary | ModuleOrigin::ThirdParty
+            ) || origin.qualified_symbol.as_ref() != origin.symbol.as_str()
             {
                 return ClassifiedCall::Deferred;
             }
-            let protocol = protocol_operation(origin.symbol.as_str());
-            return ClassifiedCall::Registry {
-                target: CallMatchTarget {
-                    identity,
-                    kind: CallKind::Builtin,
-                    name: Name::new(origin.symbol.as_str()),
-                    display_label,
-                    definition_range,
-                    receiver_parameter: None,
-                },
-                arguments: call
-                    .arguments
-                    .iter()
-                    .copied()
-                    .map(ActualArgument::from)
-                    .collect(),
-                protocol,
-            };
+            if origin.ownership_origin == ModuleOrigin::StandardLibrary
+                && origin.module.as_ref() == "builtins"
+            {
+                let protocol = protocol_operation(origin.symbol.as_str());
+                return ClassifiedCall::Registry {
+                    target: CallMatchTarget {
+                        identity,
+                        kind: CallKind::Builtin,
+                        name: Name::new(origin.symbol.as_str()),
+                        display_label,
+                        definition_range,
+                        receiver_parameter: None,
+                    },
+                    arguments: call
+                        .arguments
+                        .iter()
+                        .copied()
+                        .map(ActualArgument::from)
+                        .collect(),
+                    protocol,
+                };
+            }
         }
 
         let kind = origin.kind;
@@ -431,6 +437,10 @@ impl<'db> Matcher<'db> {
         let mut arguments = Vec::with_capacity(call.arguments.len() + 1);
         if target.kind == CallKind::Method && protocol.is_none() {
             let receiver = match (kind, call.receiver) {
+                (CallDefinitionOriginKind::ClassConstructor, _) => ActualType::SyntheticModule {
+                    name: origin.module.as_ref(),
+                    origin: origin.ownership_origin,
+                },
                 (_, Some(receiver)) => ActualType::Native(receiver),
                 (CallDefinitionOriginKind::TopLevelFunction, None) => ActualType::SyntheticModule {
                     name: origin.module.as_ref(),
@@ -1544,10 +1554,13 @@ sqrt(4.0)
     }
 
     #[test]
-    fn constructors_require_registered_builtins_and_defer_general_classes() {
+    fn constructors_require_registry_entries_and_defer_local_classes() {
         let (db, file) = setup(
             r#"
 from builtins import int as Integer
+import datetime
+from datetime import timedelta
+from difflib import SequenceMatcher
 from external import External
 
 class Outer:
@@ -1558,6 +1571,12 @@ Integer("1")
 dict()
 External()
 Outer.Inner()
+timedelta(days=3)
+datetime.timedelta(days=3)
+Delta = timedelta
+Delta(days=3)
+SequenceMatcher(None, "a", "b")
+SequenceMatcher(None, 1, 2)
 "#,
             &[("/external.py", "class External: ...\n")],
         );
@@ -1589,6 +1608,56 @@ Outer.Inner()
                 [MatchSummary::Inconclusive]
             );
         }
+        for index in 5..8 {
+            assert_eq!(
+                summarize(call_matches(&db, file, index)),
+                [MatchSummary::NoMatch {
+                    identity: IdentitySummary::Definition,
+                    kind: CallKind::Method,
+                    name: "timedelta".into(),
+                    receiver_parameter: Some(0),
+                    reason: CallNoMatchReason::MissingRegistryEntry,
+                }]
+            );
+        }
+        assert_eq!(
+            summarize(call_matches(&db, file, 8)),
+            [MatchSummary::Match {
+                identity: IdentitySummary::Definition,
+                kind: CallKind::Method,
+                name: "SequenceMatcher".into(),
+                receiver_parameter: Some(0),
+            }]
+        );
+        assert_eq!(
+            summarize(call_matches(&db, file, 9)),
+            [MatchSummary::NoMatch {
+                identity: IdentitySummary::Definition,
+                kind: CallKind::Method,
+                name: "SequenceMatcher".into(),
+                receiver_parameter: Some(0),
+                reason: CallNoMatchReason::SignatureMismatch,
+            }]
+        );
+    }
+
+    #[test]
+    fn third_party_constructors_require_registry_entries() {
+        let (db, file) = setup_with_site_packages(
+            "from external import External\nExternal()\n",
+            &[("/site-packages/external.py", "class External: ...\n")],
+        );
+
+        assert_eq!(
+            summarize(call_matches(&db, file, 0)),
+            [MatchSummary::NoMatch {
+                identity: IdentitySummary::Definition,
+                kind: CallKind::Method,
+                name: "External".into(),
+                receiver_parameter: Some(0),
+                reason: CallNoMatchReason::MissingRegistryEntry,
+            }]
+        );
     }
 
     #[test]
