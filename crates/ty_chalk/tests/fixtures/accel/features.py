@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import difflib
 import enum
 import hashlib
@@ -8,6 +9,7 @@ import math
 import os
 import re
 from collections import Counter
+from datetime import timedelta
 from typing import TypedDict
 from urllib.parse import urlparse
 
@@ -57,3 +59,5 @@ def resolver() -> None:
     math.sqrt("x")
     json.loads(1)
     re.search(1, "abc")
+    timedelta(days=3)
+    datetime.timedelta(days=3)
