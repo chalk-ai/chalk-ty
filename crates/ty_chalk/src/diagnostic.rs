@@ -35,6 +35,7 @@ impl ChalkDiagnostic {
         match self.kind {
             ChalkDiagnosticKind::ResolverCycle => ChalkDiagnosticSeverity::Error,
             ChalkDiagnosticKind::UnsupportedFunction(_)
+            | ChalkDiagnosticKind::ResolverParameterDefault
             | ChalkDiagnosticKind::UnknownSuppression { .. }
             | ChalkDiagnosticKind::InvalidSuppression { .. } => ChalkDiagnosticSeverity::Warning,
         }
@@ -42,7 +43,8 @@ impl ChalkDiagnostic {
 
     pub fn code(&self) -> &'static str {
         match self.kind {
-            ChalkDiagnosticKind::UnsupportedFunction(_) => "unsupported-function",
+            ChalkDiagnosticKind::UnsupportedFunction(_)
+            | ChalkDiagnosticKind::ResolverParameterDefault => "unsupported-function",
             ChalkDiagnosticKind::ResolverCycle => "resolver-cycle",
             ChalkDiagnosticKind::UnknownSuppression { .. } => "unknown-chalk-suppression",
             ChalkDiagnosticKind::InvalidSuppression { .. } => "invalid-chalk-suppression",
@@ -54,6 +56,9 @@ impl ChalkDiagnostic {
             ChalkDiagnosticKind::UnsupportedFunction(_) => {
                 Cow::Borrowed("Call is not supported by the static accelerator")
             }
+            ChalkDiagnosticKind::ResolverParameterDefault => Cow::Borrowed(
+                "Resolver parameter defaults are not supported by the static accelerator",
+            ),
             ChalkDiagnosticKind::ResolverCycle => {
                 Cow::Borrowed("Resolver call graph contains a cycle")
             }
@@ -72,6 +77,7 @@ impl ChalkDiagnostic {
 pub enum ChalkDiagnosticKind {
     UnsupportedFunction(UnsupportedFunctionDetails),
     ResolverCycle,
+    ResolverParameterDefault,
     UnknownSuppression { code: Box<str> },
     InvalidSuppression { reason: InvalidSuppressionReason },
 }
@@ -114,6 +120,15 @@ pub fn chalk_diagnostics_for_file(
     let candidates = project_candidates(db, project);
     let source = source_text(db, file);
     let mut diagnostics = Vec::new();
+    diagnostics.extend(
+        candidates
+            .resolver_defaults_for_file(file)
+            .map(|candidate| ChalkDiagnostic {
+                file,
+                range: candidate.range,
+                kind: ChalkDiagnosticKind::ResolverParameterDefault,
+            }),
+    );
     diagnostics.extend(
         candidates
             .unsupported_for_file(file)

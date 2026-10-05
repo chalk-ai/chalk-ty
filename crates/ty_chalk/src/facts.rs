@@ -16,10 +16,13 @@ use crate::call_matcher::{
 use crate::suppression::{SuppressionCode, SuppressionProblem, Suppressions, extract_suppressions};
 
 /// A named function recognized as a baked Chalk resolver root.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, salsa::Update, get_size2::GetSize)]
+#[derive(Clone, Debug, Eq, PartialEq, salsa::Update, get_size2::GetSize)]
 pub(crate) struct ResolverRootFact<'db> {
     pub(crate) definition: Definition<'db>,
     pub(crate) range: TextRange,
+    pub(crate) parameter_defaults: Box<[TextRange]>,
+    /// The exact statement-level directive on the resolver definition, if any.
+    pub(crate) unsupported_function_statement_suppression: Option<TextRange>,
     /// The exact function-level directive suppressing this root, if any.
     pub(crate) unsupported_function_suppression: Option<TextRange>,
 }
@@ -116,6 +119,13 @@ impl<'a, 'db> FactVisitor<'a, 'db> {
             self.resolver_roots.push(ResolverRootFact {
                 definition,
                 range: function.range,
+                parameter_defaults: function
+                    .parameters
+                    .iter_non_variadic_params()
+                    .filter_map(|parameter| parameter.default.as_deref().map(Ranged::range))
+                    .collect(),
+                unsupported_function_statement_suppression: self
+                    .statement_suppression(function.range),
                 unsupported_function_suppression: self.function_suppression(definition),
             });
         }
@@ -799,7 +809,7 @@ from chalk import online
 
 # chalk: ignore[unsupported-function]
 @online
-def root():
+def root(value=8):
     unsupported()  # chalk: ignore[unsupported-function]
 
     def nested():
@@ -830,6 +840,8 @@ top_level = 1  # chalk: ignore[future-code]
             "# chalk: ignore[unsupported-function]"
         );
         assert!(root_call.unsupported_function_caller_suppression.is_some());
+        assert_eq!(root.parameter_defaults.len(), 1);
+        assert_eq!(text(&source, root.parameter_defaults[0]), "8");
         assert!(
             nested_call
                 .unsupported_function_statement_suppression

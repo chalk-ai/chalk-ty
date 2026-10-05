@@ -35,6 +35,13 @@ pub(crate) struct CycleCandidate {
     pub(crate) range: TextRange,
 }
 
+/// An unsuppressed parameter default on a recognized resolver entry point.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, salsa::Update, get_size2::GetSize)]
+pub(crate) struct ResolverDefaultCandidate {
+    pub(crate) file: File,
+    pub(crate) range: TextRange,
+}
+
 /// An invalid or unknown Chalk suppression, independent of resolver reachability.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, salsa::Update, get_size2::GetSize)]
 pub(crate) struct ProjectSuppressionProblem {
@@ -49,6 +56,7 @@ pub(crate) struct ProjectCandidates<'db> {
     unsupported: Box<[UnsupportedCallCandidate<'db>]>,
     cycles: Box<[CycleCandidate]>,
     suppression_problems: Box<[ProjectSuppressionProblem]>,
+    resolver_defaults: Box<[ResolverDefaultCandidate]>,
 }
 
 impl<'db> ProjectCandidates<'db> {
@@ -77,6 +85,15 @@ impl<'db> ProjectCandidates<'db> {
             .filter(move |candidate| candidate.file == file)
     }
 
+    pub(crate) fn resolver_defaults_for_file(
+        &self,
+        file: File,
+    ) -> impl Iterator<Item = &ResolverDefaultCandidate> {
+        self.resolver_defaults
+            .iter()
+            .filter(move |candidate| candidate.file == file)
+    }
+
     pub(crate) fn suppression_problems_for_file(
         &self,
         file: File,
@@ -101,6 +118,7 @@ pub(crate) fn project_candidates<'db>(
     let mut unsupported_roots = Vec::new();
     let mut seen_roots = HashSet::new();
     let mut suppression_problems = Vec::new();
+    let mut resolver_defaults = Vec::new();
 
     for file in python_files {
         let Some(facts) = file_facts(db, file) else {
@@ -118,6 +136,16 @@ pub(crate) fn project_candidates<'db>(
                 cycle_roots.push(root.definition);
                 if root.unsupported_function_suppression.is_none() {
                     unsupported_roots.push(root.definition);
+                    // A statement suppression hides defaults on this definition, but
+                    // does not stop analysis of the resolver's body.
+                    if root.unsupported_function_statement_suppression.is_none() {
+                        resolver_defaults.extend(root.parameter_defaults.iter().map(|range| {
+                            ResolverDefaultCandidate {
+                                file,
+                                range: *range,
+                            }
+                        }));
+                    }
                 }
             }
         }
@@ -165,6 +193,7 @@ pub(crate) fn project_candidates<'db>(
         unsupported: analyzer.unsupported.into_boxed_slice(),
         cycles: analyzer.cycles.into_boxed_slice(),
         suppression_problems: suppression_problems.into_boxed_slice(),
+        resolver_defaults: resolver_defaults.into_boxed_slice(),
     }
 }
 
