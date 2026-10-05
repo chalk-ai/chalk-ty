@@ -8,7 +8,7 @@ use ty_python_semantic::chalk::{CallTargetKind, Definition};
 use crate::CallNoMatchReason;
 use crate::active_project::ChalkProjectInput;
 use crate::call_matcher::{CallMatchIdentity, CallMatchTarget};
-use crate::facts::{CallFact, file_facts};
+use crate::facts::{CallFact, HelperDefinitionFacts, file_facts};
 use crate::suppression::SuppressionProblemKind;
 
 type UnsupportedReason = CallNoMatchReason;
@@ -42,6 +42,13 @@ pub(crate) struct ResolverDefaultCandidate {
     pub(crate) range: TextRange,
 }
 
+/// An unsupported default on a helper reachable from an unsuppressed resolver.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, salsa::Update, get_size2::GetSize)]
+pub(crate) struct HelperDefaultCandidate {
+    pub(crate) file: File,
+    pub(crate) range: TextRange,
+}
+
 /// An invalid or unknown Chalk suppression, independent of resolver reachability.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, salsa::Update, get_size2::GetSize)]
 pub(crate) struct ProjectSuppressionProblem {
@@ -57,6 +64,7 @@ pub(crate) struct ProjectCandidates<'db> {
     cycles: Box<[CycleCandidate]>,
     suppression_problems: Box<[ProjectSuppressionProblem]>,
     resolver_defaults: Box<[ResolverDefaultCandidate]>,
+    helper_defaults: Box<[HelperDefaultCandidate]>,
 }
 
 impl<'db> ProjectCandidates<'db> {
@@ -94,6 +102,15 @@ impl<'db> ProjectCandidates<'db> {
             .filter(move |candidate| candidate.file == file)
     }
 
+    pub(crate) fn helper_defaults_for_file(
+        &self,
+        file: File,
+    ) -> impl Iterator<Item = &HelperDefaultCandidate> {
+        self.helper_defaults
+            .iter()
+            .filter(move |candidate| candidate.file == file)
+    }
+
     pub(crate) fn suppression_problems_for_file(
         &self,
         file: File,
@@ -119,12 +136,16 @@ pub(crate) fn project_candidates<'db>(
     let mut seen_roots = HashSet::new();
     let mut suppression_problems = Vec::new();
     let mut resolver_defaults = Vec::new();
+    let mut helper_definitions = HashMap::new();
 
     for file in python_files {
         let Some(facts) = file_facts(db, file) else {
             continue;
         };
 
+        for fact in &facts.helper_definitions {
+            helper_definitions.insert(fact.definition, fact);
+        }
         for call in &facts.calls {
             calls
                 .entry(call.caller)
@@ -162,6 +183,8 @@ pub(crate) fn project_candidates<'db>(
         db,
         first_party,
         calls,
+        helper_definitions,
+        unsupported_defaults: Vec::new(),
         states: HashMap::new(),
         unsupported: Vec::new(),
         cycles: Vec::new(),
@@ -189,11 +212,16 @@ pub(crate) fn project_candidates<'db>(
         compare_file_range(db, left.file, left.range, right.file, right.range)
     });
 
+    analyzer.unsupported_defaults.sort_by(|left, right| {
+        compare_file_range(db, left.file, left.range, right.file, right.range)
+    });
+
     ProjectCandidates {
         unsupported: analyzer.unsupported.into_boxed_slice(),
         cycles: analyzer.cycles.into_boxed_slice(),
         suppression_problems: suppression_problems.into_boxed_slice(),
         resolver_defaults: resolver_defaults.into_boxed_slice(),
+        helper_defaults: analyzer.unsupported_defaults.into_boxed_slice(),
     }
 }
 
@@ -219,6 +247,8 @@ struct ReachabilityAnalyzer<'db> {
     db: &'db dyn ty_project::Db,
     first_party: HashSet<File>,
     calls: HashMap<Definition<'db>, Vec<CallSite<'db>>>,
+    helper_definitions: HashMap<Definition<'db>, &'db HelperDefinitionFacts<'db>>,
+    unsupported_defaults: Vec<HelperDefaultCandidate>,
     states: HashMap<Definition<'db>, VisitState>,
     unsupported: Vec<UnsupportedCallCandidate<'db>>,
     cycles: Vec<CycleCandidate>,
@@ -231,6 +261,9 @@ impl<'db> ReachabilityAnalyzer<'db> {
             return;
         }
         self.states.insert(definition, VisitState::Visiting);
+        if analysis == Analysis::Unsupported {
+            self.check_helper_definition(definition);
+        }
 
         let calls = self.calls.get(&definition).cloned().unwrap_or_default();
         for site in calls {
@@ -238,6 +271,24 @@ impl<'db> ReachabilityAnalyzer<'db> {
         }
 
         self.states.insert(definition, VisitState::Done);
+    }
+
+    fn check_helper_definition(&mut self, definition: Definition<'db>) {
+        if let Some(facts) = self.helper_definitions.get(&definition)
+            && facts.unsupported_function_suppression.is_none()
+            && facts.unsupported_function_statement_suppression.is_none()
+        {
+            self.unsupported_defaults
+                .extend(
+                    facts
+                        .unsupported_defaults
+                        .iter()
+                        .map(|range| HelperDefaultCandidate {
+                            file: definition.file(self.db),
+                            range: *range,
+                        }),
+                );
+        }
     }
 
     fn visit_call(&mut self, site: CallSite<'db>, analysis: Analysis) {

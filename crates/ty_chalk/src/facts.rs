@@ -27,6 +27,15 @@ pub(crate) struct ResolverRootFact<'db> {
     pub(crate) unsupported_function_suppression: Option<TextRange>,
 }
 
+/// Helper definition facts retained independently of reachability and suppression.
+#[derive(Debug, Eq, PartialEq, salsa::Update, get_size2::GetSize)]
+pub(crate) struct HelperDefinitionFacts<'db> {
+    pub(crate) definition: Definition<'db>,
+    pub(crate) unsupported_defaults: Box<[TextRange]>,
+    pub(crate) unsupported_function_suppression: Option<TextRange>,
+    pub(crate) unsupported_function_statement_suppression: Option<TextRange>,
+}
+
 /// A call expression physically contained in a named function body.
 #[derive(Debug, Eq, PartialEq, salsa::Update, get_size2::GetSize)]
 pub(crate) struct CallFact<'db> {
@@ -45,6 +54,7 @@ pub(crate) struct CallFact<'db> {
 pub(crate) struct FileFacts<'db> {
     pub(crate) resolver_roots: Box<[ResolverRootFact<'db>]>,
     pub(crate) calls: Box<[CallFact<'db>]>,
+    pub(crate) helper_definitions: Box<[HelperDefinitionFacts<'db>]>,
     pub(crate) suppression_problems: Box<[SuppressionProblem]>,
 }
 
@@ -60,12 +70,14 @@ fn extract_file_facts(db: &dyn Db, file: File) -> FileFacts<'_> {
         statement: None,
         resolver_roots: Vec::new(),
         calls: Vec::new(),
+        helper_definitions: Vec::new(),
     };
     visitor.visit_body(&parsed.syntax().body);
 
     FileFacts {
         resolver_roots: visitor.resolver_roots.into_boxed_slice(),
         calls: visitor.calls.into_boxed_slice(),
+        helper_definitions: visitor.helper_definitions.into_boxed_slice(),
         suppression_problems: suppressions.problems,
     }
 }
@@ -105,6 +117,7 @@ struct FactVisitor<'a, 'db> {
     statement: Option<TextRange>,
     resolver_roots: Vec<ResolverRootFact<'db>>,
     calls: Vec<CallFact<'db>>,
+    helper_definitions: Vec<HelperDefinitionFacts<'db>>,
 }
 
 impl<'a, 'db> FactVisitor<'a, 'db> {
@@ -128,11 +141,36 @@ impl<'a, 'db> FactVisitor<'a, 'db> {
                     .statement_suppression(function.range),
                 unsupported_function_suppression: self.function_suppression(definition),
             });
+        } else {
+            self.collect_helper_definition_facts(function, definition);
         }
 
         let enclosing_caller = self.caller.replace(definition);
         self.visit_body(&function.body);
         self.caller = enclosing_caller;
+    }
+
+    fn collect_helper_definition_facts(
+        &mut self,
+        function: &ast::StmtFunctionDef,
+        definition: Definition<'db>,
+    ) {
+        let ranges: Box<[_]> = function
+            .parameters
+            .iter_non_variadic_params()
+            .filter_map(|parameter| parameter.default.as_deref())
+            .filter(|default| !supported_helper_default(default))
+            .map(Ranged::range)
+            .collect();
+        if !ranges.is_empty() {
+            self.helper_definitions.push(HelperDefinitionFacts {
+                definition,
+                unsupported_defaults: ranges,
+                unsupported_function_suppression: self.function_suppression(definition),
+                unsupported_function_statement_suppression: self
+                    .statement_suppression(function.range),
+            });
+        }
     }
 
     fn is_resolver_decorator(&self, decorator: &ast::Decorator) -> bool {
@@ -306,6 +344,28 @@ impl<'a> SourceOrderVisitor<'a> for FactVisitor<'a, '_> {
             self.visit_call(call);
         }
         walk_expr(self, expression);
+    }
+}
+
+// The accelerator accepts bool, int, float, str, and None literals, or exactly
+// one unary + or - directly on an int or float literal. Ruff represents booleans
+// separately from numbers, so signed booleans are excluded even though Python's
+// bool is a subclass of int.
+fn supported_helper_default(expression: &ast::Expr) -> bool {
+    match expression {
+        ast::Expr::StringLiteral(_) | ast::Expr::BooleanLiteral(_) | ast::Expr::NoneLiteral(_) => {
+            true
+        }
+        ast::Expr::NumberLiteral(number) => {
+            matches!(number.value, ast::Number::Int(_) | ast::Number::Float(_))
+        }
+        ast::Expr::UnaryOp(unary)
+            if matches!(unary.op, ast::UnaryOp::UAdd | ast::UnaryOp::USub) =>
+        {
+            matches!(unary.operand.as_ref(), ast::Expr::NumberLiteral(number)
+                if matches!(number.value, ast::Number::Int(_) | ast::Number::Float(_)))
+        }
+        _ => false,
     }
 }
 
