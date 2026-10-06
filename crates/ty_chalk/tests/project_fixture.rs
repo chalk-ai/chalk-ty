@@ -1,5 +1,6 @@
 use ruff_db::Db as _;
 use ruff_db::files::system_path_to_file;
+use ruff_db::parsed::parsed_module;
 use ruff_db::source::source_text;
 use ruff_db::system::{
     DbWithTestSystem as _, DbWithWritableSystem as _, SystemPath, SystemPathBuf,
@@ -230,14 +231,12 @@ fn alignment_helper_default_edits_update_warnings() {
 
 #[test]
 fn alignment_outside_resolvers_and_call_site_suppression() {
-    for source in [DEFAULT_RESOLVERS] {
-        let source = source.replace("@online\n", "");
-        let db = fixture_db(&[
-            ("features.py", &source),
-            ("defaults_helpers.py", DEFAULT_HELPERS),
-        ]);
-        assert_helper_default_warnings(&db, alignment_input(&db), &[]);
-    }
+    let source = DEFAULT_RESOLVERS.replace("@online\n", "");
+    let db = fixture_db(&[
+        ("features.py", &source),
+        ("defaults_helpers.py", DEFAULT_HELPERS),
+    ]);
+    assert_helper_default_warnings(&db, alignment_input(&db), &[]);
     let resolver = "from chalk import online\nfrom defaults_helpers import named_budget\n@online\ndef resolver(text: str) -> int:\n    return named_budget(text)  # chalk: ignore[unsupported-function]\n";
     let db = fixture_db(&[
         ("features.py", resolver),
@@ -664,4 +663,175 @@ fn helper_multiline_default_ranges_and_suppression() {
     }
     db.write_file("/project/helpers.py", helpers).unwrap();
     assert_helper_default_warnings(&db, input, &expected);
+}
+
+#[test]
+fn comprehension_calls_warn() {
+    let source = include_str!("fixtures/alignment/comprehension_calls_resolvers.py");
+    let db = fixture_db(&[("features.py", source)]);
+    let input = alignment_input(&db);
+    let file = system_path_to_file(&db, "/project/features.py").unwrap();
+    let diagnostics = chalk_diagnostics_for_file(&db, input, file);
+    let actual = diagnostics
+        .iter()
+        .map(|diagnostic| &source[diagnostic.range])
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual,
+        [
+            "BUDGET",
+            "math.gcd(value, 2)",
+            "BUDGET",
+            "math.gcd(values[0], 2)",
+            "math.gcd(value, 2)",
+            "math.gcd(value, 2)",
+            "math.gcd(value, 2)",
+            "math.gcd(value, 2)",
+            "math.gcd(value, 2)",
+            "math.gcd(value, 2)",
+            "math.gcd(value, 2)",
+        ]
+    );
+    assert!(parsed_module(&db, file).load(&db).has_valid_syntax());
+    for diagnostic in diagnostics {
+        assert_eq!(diagnostic.code(), "unsupported-function");
+        assert_eq!(
+            diagnostic.severity(),
+            ty_chalk::ChalkDiagnosticSeverity::Warning
+        );
+        if &source[diagnostic.range] == "BUDGET" {
+            assert_eq!(
+                diagnostic.kind,
+                ty_chalk::ChalkDiagnosticKind::HelperParameterDefault
+            );
+        } else {
+            assert_eq!(
+                diagnostic.unsupported_function_details().unwrap().targets[0].reason,
+                CallNoMatchReason::MissingRegistryEntry
+            );
+        }
+    }
+}
+
+#[test]
+fn comprehension_helper_reachability_updates() {
+    for (open, close) in [("[", "]"), ("{", "}"), ("(", ")")] {
+        let helper = "BUDGET = 8\ndef helper(value: int, limit: int = BUDGET):\n    return value\n";
+        let source = "from chalk import online\nfrom helpers import helper\n@online\ndef resolver(values: list[int]):\n    return [helper(value) for value in values]\n";
+        let source = source.replace(
+            "[helper(value) for value in values]",
+            &format!("{open}helper(value) for value in values{close}"),
+        );
+        let source = source.as_str();
+        let mut db = fixture_db(&[("features.py", source), ("helpers.py", helper)]);
+        let input = alignment_input(&db);
+        assert_helper_default_warnings(&db, input, &[("helpers.py", "BUDGET")]);
+        db.write_file(
+            "/project/features.py",
+            source.replace(
+                &format!("{open}helper(value) for value in values{close}"),
+                "helper(values[0])",
+            ),
+        )
+        .unwrap();
+        assert_helper_default_warnings(&db, input, &[("helpers.py", "BUDGET")]);
+        db.write_file("/project/features.py", source).unwrap();
+        assert_helper_default_warnings(&db, input, &[("helpers.py", "BUDGET")]);
+        db.write_file(
+            "/project/features.py",
+            source.replace(
+                &format!("{open}helper(value) for value in values{close}"),
+                "values",
+            ),
+        )
+        .unwrap();
+        assert_helper_default_warnings(&db, input, &[]);
+    }
+}
+
+#[test]
+fn comprehension_call_scopes_and_suppression() {
+    for (open, close) in [("[", "]"), ("{", "}"), ("(", ")")] {
+        for (expression, warns) in [
+            ("[helper(x) for x in values]", true),
+            ("[x for x in values if helper(x)]", true),
+            ("[x for x in iterable(values)]", true),
+            ("[y for x in values for y in iterable(values)]", true),
+            ("[[helper(y) for y in values] for x in values]", true),
+            (
+                "[helper(x) for helper in [supported] for x in values]",
+                false,
+            ),
+            ("[helper for helper in values]", false),
+            ("[supported(x) for x in values]", false),
+        ] {
+            let expression = format!("{open}{}{close}", &expression[1..expression.len() - 1]);
+            let source = format!(
+                "from chalk import online\nBUDGET = 8\ndef helper(value, limit=BUDGET):\n    return value\ndef iterable(values, limit=BUDGET):\n    return values\ndef supported(value):\n    return value\n@online\ndef resolver(values: list[int]):\n    return {expression}\n"
+            );
+            let db = fixture_db(&[("features.py", &source)]);
+            let expected = if warns {
+                vec![("features.py", "BUDGET")]
+            } else {
+                vec![]
+            };
+            assert_helper_default_warnings(&db, alignment_input(&db), &expected);
+        }
+        let source = "from chalk import online\nimport math\n@online\ndef resolver(values: list[int]):\n    return [math.gcd(x, 2) for x in values]\n";
+        let source = source.replace(
+            "[math.gcd(x, 2) for x in values]",
+            &format!("{open}math.gcd(x, 2) for x in values{close}"),
+        );
+        let source = source.as_str();
+        let mut db = fixture_db(&[("features.py", source)]);
+        let input = alignment_input(&db);
+        let file = system_path_to_file(&db, "/project/features.py").unwrap();
+        assert_eq!(chalk_diagnostics_for_file(&db, input, file).len(), 1);
+        for suppressed in [
+            source.replace(
+                &format!("for x in values{close}"),
+                &format!("for x in values{close}  # chalk: ignore[unsupported-function]"),
+            ),
+            source.replace("@online", "# chalk: ignore[unsupported-function]\n@online"),
+        ] {
+            db.write_file("/project/features.py", suppressed).unwrap();
+            assert!(chalk_diagnostics_for_file(&db, input, file).is_empty());
+        }
+        db.write_file("/project/features.py", source).unwrap();
+        assert_eq!(chalk_diagnostics_for_file(&db, input, file).len(), 1);
+    }
+}
+
+#[test]
+fn comprehension_transitive_calls_preserve_helper_suppression() {
+    for (open, close) in [("[", "]"), ("{", "}"), ("(", ")")] {
+        let helpers = "import math\ndef inner(value: int):\n    return math.gcd(value, 2)\ndef outer(value: int):\n    return inner(value)\n";
+        let resolver = format!(
+            "from chalk import online\nfrom helpers import outer\n@online\ndef resolver(values: list[int]):\n    return {open}outer(x) for x in values{close}  # chalk: ignore[unsupported-function]\n"
+        );
+        let mut db = fixture_db(&[("features.py", &resolver), ("helpers.py", helpers)]);
+        let input = alignment_input(&db);
+        let file = system_path_to_file(&db, "/project/helpers.py").unwrap();
+        let diagnostics = chalk_diagnostics_for_file(&db, input, file);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(&helpers[diagnostics[0].range], "math.gcd(value, 2)");
+        db.write_file(
+            "/project/helpers.py",
+            helpers.replace(
+                "def inner",
+                "# chalk: ignore[unsupported-function]\ndef inner",
+            ),
+        )
+        .unwrap();
+        assert!(chalk_diagnostics_for_file(&db, input, file).is_empty());
+        db.write_file(
+            "/project/helpers.py",
+            helpers.replace(
+                "def outer",
+                "# chalk: ignore[unsupported-function]\ndef outer",
+            ),
+        )
+        .unwrap();
+        assert_eq!(chalk_diagnostics_for_file(&db, input, file).len(), 1);
+    }
 }
