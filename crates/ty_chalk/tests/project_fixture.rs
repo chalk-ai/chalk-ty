@@ -133,6 +133,12 @@ fn assert_helper_default_warnings(
     for file in input.python_files(db) {
         let source = source_text(db, file);
         for diagnostic in chalk_diagnostics_for_file(db, input, file) {
+            if matches!(
+                diagnostic.kind,
+                ty_chalk::ChalkDiagnosticKind::UnsupportedExpression(_)
+            ) {
+                continue;
+            }
             assert_eq!(
                 diagnostic.kind,
                 ty_chalk::ChalkDiagnosticKind::HelperParameterDefault
@@ -672,6 +678,15 @@ fn comprehension_calls_warn() {
     let input = alignment_input(&db);
     let file = system_path_to_file(&db, "/project/features.py").unwrap();
     let diagnostics = chalk_diagnostics_for_file(&db, input, file);
+    let diagnostics = diagnostics
+        .into_iter()
+        .filter(|diagnostic| {
+            !matches!(
+                diagnostic.kind,
+                ty_chalk::ChalkDiagnosticKind::UnsupportedExpression(_)
+            )
+        })
+        .collect::<Vec<_>>();
     let actual = diagnostics
         .iter()
         .map(|diagnostic| &source[diagnostic.range])
@@ -833,5 +848,293 @@ fn comprehension_transitive_calls_preserve_helper_suppression() {
         )
         .unwrap();
         assert_eq!(chalk_diagnostics_for_file(&db, input, file).len(), 1);
+    }
+}
+
+fn assert_alignment_diagnostics(
+    db: &TestDb,
+    input: ChalkProjectInput,
+    expected: &[(&str, &str, CallNoMatchReason)],
+) {
+    let mut actual = Vec::new();
+    for file in input.python_files(db) {
+        let parsed = parsed_module(db, file).load(db);
+        assert!(
+            parsed.has_valid_syntax(),
+            "{:?}: {:?}",
+            file.path(db),
+            parsed.errors()
+        );
+        let source = source_text(db, file);
+        for diagnostic in chalk_diagnostics_for_file(db, input, file) {
+            assert_eq!(diagnostic.code(), "unsupported-function");
+            assert_eq!(
+                diagnostic.severity(),
+                ty_chalk::ChalkDiagnosticSeverity::Warning
+            );
+            if matches!(
+                diagnostic.kind,
+                ty_chalk::ChalkDiagnosticKind::UnsupportedExpression(_)
+            ) {
+                continue;
+            }
+            let details = diagnostic.unsupported_function_details().unwrap();
+            assert_eq!(details.targets.len(), 1);
+            actual.push((
+                file.path(db)
+                    .as_system_path()
+                    .unwrap()
+                    .file_name()
+                    .unwrap()
+                    .to_string(),
+                source[diagnostic.range].to_string(),
+                details.targets[0].reason,
+            ));
+        }
+    }
+    let expected = expected
+        .iter()
+        .map(|(file, text, reason)| ((*file).to_string(), (*text).to_string(), *reason))
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn alignment_dictionary_comprehensions_current_diagnostics() {
+    let source = include_str!("fixtures/alignment/dictcomp_resolvers.py");
+    let db = fixture_db(&[("features.py", source)]);
+    // Statement termination parity is deferred; this includes expressions after exits.
+    assert_dictionary_comprehensions(
+        &db,
+        alignment_input(&db),
+        &[
+            ("features.py", "{value: value for value in values}"),
+            ("features.py", "{value: value for value in values}"),
+            ("features.py", "{value: value for value in [1, 2]}"),
+            ("features.py", "{value: value for value in []}"),
+            ("features.py", "{value: value for value in (1, 2)}"),
+            (
+                "features.py",
+                "{value: value for value in values if value > 0}",
+            ),
+            ("features.py", "{value: value for value in values if False}"),
+            (
+                "features.py",
+                "{left: right for left in values for right in values}",
+            ),
+            (
+                "features.py",
+                "{value: {other: other for other in values} for value in values}",
+            ),
+            ("features.py", "{value: value for value in values}"),
+            ("features.py", "{value: value for value in values}"),
+            ("features.py", "{value: value for value in values}"),
+            (
+                "features.py",
+                "{value: value for value in json.loads(\"[1, 2]\")}",
+            ),
+            ("features.py", "{value: value for value in values}"),
+            ("features.py", "{value: value for value in values}"),
+            ("features.py", "{value: value for value in values}"),
+            ("features.py", "{value: value for value in values}"),
+            ("features.py", "{value: value for value in values}"),
+            ("features.py", "{value: value for value in values}"),
+            ("features.py", "{value: value for value in values}"),
+            ("features.py", "{value: value for value in values}"),
+            ("features.py", "{value: value for value in values}"),
+            ("features.py", "{value: value for value in values}"),
+            ("features.py", "{value: value for value in values}"),
+            ("features.py", "{value: value for value in values}"),
+            ("features.py", "{value: value for value in values}"),
+            ("features.py", "{value: value for value in values}"),
+            ("features.py", "{value: value for value in values}"),
+            ("features.py", "{value: value for value in values}"),
+            ("features.py", "{value: value for value in values}"),
+        ],
+    );
+    assert_alignment_diagnostics(
+        &db,
+        alignment_input(&db),
+        &[(
+            "features.py",
+            "len({value: value for value in values})",
+            CallNoMatchReason::SignatureMismatch,
+        )],
+    );
+}
+
+#[test]
+fn alignment_dictionary_comprehension_cross_file_helper_warns() {
+    let helper = "def helper(values: list[int]):\n    return {value: value for value in values}\n";
+    let resolver = "from chalk import online\nfrom helpers import helper\n@online\ndef resolver(values: list[int]):\n    return helper(values)\n";
+    let db = fixture_db(&[("features.py", resolver), ("helpers.py", helper)]);
+    assert_dictionary_comprehensions(
+        &db,
+        alignment_input(&db),
+        &[("helpers.py", "{value: value for value in values}")],
+    );
+}
+
+fn assert_dictionary_comprehensions(
+    db: &TestDb,
+    input: ChalkProjectInput,
+    expected: &[(&str, &str)],
+) {
+    let mut actual = Vec::new();
+    for file in input.python_files(db) {
+        let source = source_text(db, file);
+        for diagnostic in chalk_diagnostics_for_file(db, input, file) {
+            if diagnostic.kind
+                == ty_chalk::ChalkDiagnosticKind::UnsupportedExpression(
+                    ty_chalk::UnsupportedExpressionKind::DictionaryComprehension,
+                )
+            {
+                assert_eq!(diagnostic.code(), "unsupported-function");
+                assert_eq!(
+                    diagnostic.severity(),
+                    ty_chalk::ChalkDiagnosticSeverity::Warning
+                );
+                assert_eq!(
+                    diagnostic.message(),
+                    "Dictionary comprehensions are not supported by the static accelerator"
+                );
+                actual.push((
+                    file.path(db)
+                        .as_system_path()
+                        .unwrap()
+                        .file_name()
+                        .unwrap()
+                        .to_string(),
+                    source[diagnostic.range].to_string(),
+                ));
+            }
+        }
+    }
+    assert_eq!(
+        actual,
+        expected
+            .iter()
+            .map(|(file, expression)| (file.to_string(), expression.to_string()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn dictionary_comprehension_suppression_reachability_and_edits() {
+    let helper = "def helper(values):\n    return {value: value for value in values}\n";
+    let resolver = "from chalk import online\nfrom helpers import helper\n@online\ndef resolver(values: list[int]):\n    return helper(values) + helper(values)\n";
+    let mut db = fixture_db(&[("features.py", resolver), ("helpers.py", helper)]);
+    let input = alignment_input(&db);
+    let expected = [("helpers.py", "{value: value for value in values}")];
+    assert_dictionary_comprehensions(&db, input, &expected);
+    for suppressed in [
+        format!("# chalk: ignore[unsupported-function]\n{helper}"),
+        helper.replace(
+            "in values}",
+            "in values}  # chalk: ignore[unsupported-function]",
+        ),
+    ] {
+        db.write_file("/project/helpers.py", suppressed).unwrap();
+        assert_dictionary_comprehensions(&db, input, &[]);
+    }
+    db.write_file("/project/helpers.py", helper).unwrap();
+    db.write_file(
+        "/project/features.py",
+        resolver.replace(
+            "return helper(values) + helper(values)",
+            "return helper(values) + helper(values)  # chalk: ignore[unsupported-function]",
+        ),
+    )
+    .unwrap();
+    assert_dictionary_comprehensions(&db, input, &expected);
+    db.write_file(
+        "/project/helpers.py",
+        helper.replace("{value: value for value in values}", "{}"),
+    )
+    .unwrap();
+    assert_dictionary_comprehensions(&db, input, &[]);
+    db.write_file("/project/helpers.py", helper).unwrap();
+    assert_dictionary_comprehensions(&db, input, &expected);
+    db.write_file(
+        "/project/features.py",
+        resolver.replace("return helper(values) + helper(values)", "return 1"),
+    )
+    .unwrap();
+    assert_dictionary_comprehensions(&db, input, &[]);
+    db.write_file(
+        "/project/features.py",
+        resolver.replace("@online", "# chalk: ignore[unsupported-function]\n@online"),
+    )
+    .unwrap();
+    assert_dictionary_comprehensions(&db, input, &[]);
+}
+
+#[test]
+fn dictionary_comprehensions_in_eager_containers_and_multiline_statements() {
+    let source = r"
+from chalk import online
+
+@online
+def resolver(values: list[int]):
+    first = [{x: x for x in values} for _ in values]
+    second = {len({x: x for x in values}) for _ in values}
+    third = {
+        x: x
+        for x in values
+    }
+    return first
+
+@online
+def suppressed(values: list[int]):
+    return {x: x for x in values}  # chalk: ignore[unsupported-function]
+
+def unused(values):
+    return {x: x for x in values}
+";
+    let db = fixture_db(&[("features.py", source)]);
+    assert_dictionary_comprehensions(
+        &db,
+        alignment_input(&db),
+        &[
+            ("features.py", "{x: x for x in values}"),
+            ("features.py", "{x: x for x in values}"),
+            (
+                "features.py",
+                "{\n        x: x\n        for x in values\n    }",
+            ),
+        ],
+    );
+}
+
+#[test]
+fn multiple_generator_list_comprehensions_and_controls() {
+    for (expression, warns) in [
+        ("[y for x in values for y in values]", true),
+        ("[z for x in values for y in values for z in values]", true),
+        ("[y for x in values for y in values if y > x]", true),
+        ("[x for x in values if x > 0]", false),
+        ("[[y for y in values] for x in values]", false),
+    ] {
+        let source = format!(
+            "from chalk import online\n@online\ndef resolver(values: list[int]):\n    return {expression}\n"
+        );
+        let db = fixture_db(&[("features.py", &source)]);
+        let file = system_path_to_file(&db, "/project/features.py").unwrap();
+        let diagnostics = chalk_diagnostics_for_file(&db, alignment_input(&db), file);
+        assert_eq!(diagnostics.len(), usize::from(warns), "{source}");
+        for diagnostic in diagnostics {
+            assert_eq!(
+                diagnostic.kind,
+                ty_chalk::ChalkDiagnosticKind::UnsupportedExpression(
+                    ty_chalk::UnsupportedExpressionKind::MultipleGeneratorListComprehension,
+                )
+            );
+            assert_eq!(&source[diagnostic.range], expression);
+            assert_eq!(diagnostic.code(), "unsupported-function");
+            assert_eq!(
+                diagnostic.severity(),
+                ty_chalk::ChalkDiagnosticSeverity::Warning
+            );
+        }
     }
 }

@@ -8,12 +8,12 @@ use ruff_text_size::{Ranged, TextRange};
 use ty_python_semantic::chalk::{CallTarget, Definition, ModuleOrigin};
 use ty_python_semantic::{Db, HasDefinition, HasType, SemanticModel};
 
-use crate::CallNoMatchReason;
 use crate::call_matcher::{
     CallMatch, CallMatchTarget, ObservedArgument, ObservedCall, ObservedCallTarget,
     match_call_target,
 };
 use crate::suppression::{SuppressionCode, SuppressionProblem, Suppressions, extract_suppressions};
+use crate::{CallNoMatchReason, UnsupportedExpressionKind};
 
 /// A named function recognized as a baked Chalk resolver root.
 #[derive(Clone, Debug, Eq, PartialEq, salsa::Update, get_size2::GetSize)]
@@ -49,10 +49,21 @@ pub(crate) struct CallFact<'db> {
     pub(crate) unsupported_function_caller_suppression: Option<TextRange>,
 }
 
+/// An unsupported expression in a named function body, before reachability and suppression.
+#[derive(Debug, Eq, PartialEq, salsa::Update, get_size2::GetSize)]
+pub(crate) struct UnsupportedExpressionFact<'db> {
+    pub(crate) caller: Definition<'db>,
+    pub(crate) range: TextRange,
+    pub(crate) kind: UnsupportedExpressionKind,
+    pub(crate) statement_suppression: Option<TextRange>,
+    pub(crate) function_suppression: Option<TextRange>,
+}
+
 /// Compact Chalk-specific semantic facts extracted from one Python file.
 #[derive(Debug, Eq, PartialEq, salsa::Update, get_size2::GetSize)]
 pub(crate) struct FileFacts<'db> {
     pub(crate) resolver_roots: Box<[ResolverRootFact<'db>]>,
+    pub(crate) unsupported_expressions: Box<[UnsupportedExpressionFact<'db>]>,
     pub(crate) calls: Box<[CallFact<'db>]>,
     pub(crate) helper_definitions: Box<[HelperDefinitionFacts<'db>]>,
     pub(crate) suppression_problems: Box<[SuppressionProblem]>,
@@ -70,6 +81,7 @@ fn extract_file_facts(db: &dyn Db, file: File) -> FileFacts<'_> {
         statement: None,
         resolver_roots: Vec::new(),
         calls: Vec::new(),
+        unsupported_expressions: Vec::new(),
         helper_definitions: Vec::new(),
     };
     visitor.visit_body(&parsed.syntax().body);
@@ -77,6 +89,7 @@ fn extract_file_facts(db: &dyn Db, file: File) -> FileFacts<'_> {
     FileFacts {
         resolver_roots: visitor.resolver_roots.into_boxed_slice(),
         calls: visitor.calls.into_boxed_slice(),
+        unsupported_expressions: visitor.unsupported_expressions.into_boxed_slice(),
         helper_definitions: visitor.helper_definitions.into_boxed_slice(),
         suppression_problems: suppressions.problems,
     }
@@ -116,6 +129,7 @@ struct FactVisitor<'a, 'db> {
     caller: Option<Definition<'db>>,
     statement: Option<TextRange>,
     resolver_roots: Vec<ResolverRootFact<'db>>,
+    unsupported_expressions: Vec<UnsupportedExpressionFact<'db>>,
     calls: Vec<CallFact<'db>>,
     helper_definitions: Vec<HelperDefinitionFacts<'db>>,
 }
@@ -308,6 +322,27 @@ impl<'a, 'db> FactVisitor<'a, 'db> {
             unsupported_function_caller_suppression: self.function_suppression(caller),
         });
     }
+
+    fn collect_unsupported_expression_fact(&mut self, expression: &ast::Expr) {
+        let (Some(caller), Some(statement)) = (self.caller, self.statement) else {
+            return;
+        };
+        let kind = match expression {
+            ast::Expr::DictComp(_) => UnsupportedExpressionKind::DictionaryComprehension,
+            ast::Expr::ListComp(comprehension) if comprehension.generators.len() > 1 => {
+                UnsupportedExpressionKind::MultipleGeneratorListComprehension
+            }
+            _ => return,
+        };
+        self.unsupported_expressions
+            .push(UnsupportedExpressionFact {
+                caller,
+                range: expression.range(),
+                kind,
+                statement_suppression: self.statement_suppression(statement),
+                function_suppression: self.function_suppression(caller),
+            });
+    }
 }
 
 impl<'a> SourceOrderVisitor<'a> for FactVisitor<'a, '_> {
@@ -329,6 +364,8 @@ impl<'a> SourceOrderVisitor<'a> for FactVisitor<'a, '_> {
     fn visit_annotation(&mut self, _annotation: &'a ast::Expr) {}
 
     fn visit_expr(&mut self, expression: &'a ast::Expr) {
+        self.collect_unsupported_expression_fact(expression);
+
         if matches!(expression, ast::Expr::Lambda(_) | ast::Expr::DictComp(_)) {
             return;
         }
