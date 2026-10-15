@@ -329,14 +329,7 @@ impl<'a> SourceOrderVisitor<'a> for FactVisitor<'a, '_> {
     fn visit_annotation(&mut self, _annotation: &'a ast::Expr) {}
 
     fn visit_expr(&mut self, expression: &'a ast::Expr) {
-        if matches!(
-            expression,
-            ast::Expr::Lambda(_)
-                | ast::Expr::ListComp(_)
-                | ast::Expr::SetComp(_)
-                | ast::Expr::DictComp(_)
-                | ast::Expr::Generator(_)
-        ) {
+        if matches!(expression, ast::Expr::Lambda(_) | ast::Expr::DictComp(_)) {
             return;
         }
 
@@ -711,7 +704,15 @@ def decorated():
 
         assert_eq!(
             calls,
-            ["outer", "nested", "generator", "method", "decorated"]
+            [
+                "outer",
+                "outer",
+                "outer",
+                "nested",
+                "generator",
+                "method",
+                "decorated"
+            ]
         );
     }
 
