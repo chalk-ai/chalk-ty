@@ -5,11 +5,11 @@ use ruff_db::files::File;
 use ruff_text_size::TextRange;
 use ty_python_semantic::chalk::{CallTargetKind, Definition};
 
-use crate::CallNoMatchReason;
 use crate::active_project::ChalkProjectInput;
 use crate::call_matcher::{CallMatchIdentity, CallMatchTarget};
-use crate::facts::{CallFact, HelperDefinitionFacts, file_facts};
+use crate::facts::{CallFact, HelperDefinitionFacts, UnsupportedExpressionFact, file_facts};
 use crate::suppression::SuppressionProblemKind;
+use crate::{CallNoMatchReason, UnsupportedExpressionKind};
 
 type UnsupportedReason = CallNoMatchReason;
 
@@ -49,6 +49,14 @@ pub(crate) struct HelperDefaultCandidate {
     pub(crate) range: TextRange,
 }
 
+/// An unsuppressed unsupported expression reachable from a resolver.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, salsa::Update, get_size2::GetSize)]
+pub(crate) struct UnsupportedExpressionCandidate {
+    pub(crate) kind: UnsupportedExpressionKind,
+    pub(crate) file: File,
+    pub(crate) range: TextRange,
+}
+
 /// An invalid or unknown Chalk suppression, independent of resolver reachability.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, salsa::Update, get_size2::GetSize)]
 pub(crate) struct ProjectSuppressionProblem {
@@ -65,6 +73,7 @@ pub(crate) struct ProjectCandidates<'db> {
     suppression_problems: Box<[ProjectSuppressionProblem]>,
     resolver_defaults: Box<[ResolverDefaultCandidate]>,
     helper_defaults: Box<[HelperDefaultCandidate]>,
+    unsupported_expressions: Box<[UnsupportedExpressionCandidate]>,
 }
 
 impl<'db> ProjectCandidates<'db> {
@@ -111,6 +120,15 @@ impl<'db> ProjectCandidates<'db> {
             .filter(move |candidate| candidate.file == file)
     }
 
+    pub(crate) fn unsupported_expressions_for_file(
+        &self,
+        file: File,
+    ) -> impl Iterator<Item = &UnsupportedExpressionCandidate> {
+        self.unsupported_expressions
+            .iter()
+            .filter(move |candidate| candidate.file == file)
+    }
+
     pub(crate) fn suppression_problems_for_file(
         &self,
         file: File,
@@ -137,12 +155,20 @@ pub(crate) fn project_candidates<'db>(
     let mut suppression_problems = Vec::new();
     let mut resolver_defaults = Vec::new();
     let mut helper_definitions = HashMap::new();
+    let mut unsupported_expressions =
+        HashMap::<Definition<'db>, Vec<&UnsupportedExpressionFact<'db>>>::new();
 
     for file in python_files {
         let Some(facts) = file_facts(db, file) else {
             continue;
         };
 
+        for fact in &facts.unsupported_expressions {
+            unsupported_expressions
+                .entry(fact.caller)
+                .or_default()
+                .push(fact);
+        }
         for fact in &facts.helper_definitions {
             helper_definitions.insert(fact.definition, fact);
         }
@@ -184,6 +210,8 @@ pub(crate) fn project_candidates<'db>(
         first_party,
         calls,
         helper_definitions,
+        unsupported_expressions,
+        expression_candidates: Vec::new(),
         unsupported_defaults: Vec::new(),
         states: HashMap::new(),
         unsupported: Vec::new(),
@@ -216,12 +244,17 @@ pub(crate) fn project_candidates<'db>(
         compare_file_range(db, left.file, left.range, right.file, right.range)
     });
 
+    analyzer.expression_candidates.sort_by(|left, right| {
+        compare_file_range(db, left.file, left.range, right.file, right.range)
+    });
+
     ProjectCandidates {
         unsupported: analyzer.unsupported.into_boxed_slice(),
         cycles: analyzer.cycles.into_boxed_slice(),
         suppression_problems: suppression_problems.into_boxed_slice(),
         resolver_defaults: resolver_defaults.into_boxed_slice(),
         helper_defaults: analyzer.unsupported_defaults.into_boxed_slice(),
+        unsupported_expressions: analyzer.expression_candidates.into_boxed_slice(),
     }
 }
 
@@ -249,6 +282,8 @@ struct ReachabilityAnalyzer<'db> {
     calls: HashMap<Definition<'db>, Vec<CallSite<'db>>>,
     helper_definitions: HashMap<Definition<'db>, &'db HelperDefinitionFacts<'db>>,
     unsupported_defaults: Vec<HelperDefaultCandidate>,
+    unsupported_expressions: HashMap<Definition<'db>, Vec<&'db UnsupportedExpressionFact<'db>>>,
+    expression_candidates: Vec<UnsupportedExpressionCandidate>,
     states: HashMap<Definition<'db>, VisitState>,
     unsupported: Vec<UnsupportedCallCandidate<'db>>,
     cycles: Vec<CycleCandidate>,
@@ -263,6 +298,7 @@ impl<'db> ReachabilityAnalyzer<'db> {
         self.states.insert(definition, VisitState::Visiting);
         if analysis == Analysis::Unsupported {
             self.check_helper_definition(definition);
+            self.check_unsupported_expressions(definition);
         }
 
         let calls = self.calls.get(&definition).cloned().unwrap_or_default();
@@ -271,6 +307,23 @@ impl<'db> ReachabilityAnalyzer<'db> {
         }
 
         self.states.insert(definition, VisitState::Done);
+    }
+
+    fn check_unsupported_expressions(&mut self, definition: Definition<'db>) {
+        if let Some(facts) = self.unsupported_expressions.get(&definition) {
+            self.expression_candidates.extend(
+                facts
+                    .iter()
+                    .filter(|fact| {
+                        fact.statement_suppression.is_none() && fact.function_suppression.is_none()
+                    })
+                    .map(|fact| UnsupportedExpressionCandidate {
+                        kind: fact.kind,
+                        file: definition.file(self.db),
+                        range: fact.range,
+                    }),
+            );
+        }
     }
 
     fn check_helper_definition(&mut self, definition: Definition<'db>) {
@@ -489,6 +542,67 @@ mod tests {
 
     fn text(db: &TestDb, file: File, range: TextRange) -> String {
         source_text(db, file)[range].to_string()
+    }
+
+    #[test]
+    fn expression_candidates_preserve_source_order_and_unsupported_reachability() {
+        let (db, files) = setup(&[
+            (
+                "/z.py",
+                "\
+from chalk import online
+from a import earlier, later, only_suppressed
+
+@online
+def root(values):
+    later(values)
+    earlier(values)
+    earlier(values)
+    return {v: v for v in values}
+
+# chalk: ignore[unsupported-function]
+@online
+def suppressed(values):
+    return only_suppressed(values)
+",
+            ),
+            (
+                "/a.py",
+                "\
+def earlier(values):
+    first = {x: x for x in values}
+    ignored = {k: k for k in values}  # chalk: ignore[unsupported-function]
+    return [{y: y for y in values} for left in values for right in values]
+
+def later(values):
+    return {z: z for z in values}
+
+def only_suppressed(values):
+    return {hidden: hidden for hidden in values}
+",
+            ),
+        ]);
+        let project = input(&db, &files, &["/z.py", "/a.py"]);
+        let candidates = project_candidates(&db, project);
+        let actual = candidates
+            .unsupported_expressions
+            .iter()
+            .map(|candidate| (candidate.file, text(&db, candidate.file, candidate.range)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual,
+            [
+                ("/a.py", "{x: x for x in values}"),
+                (
+                    "/a.py",
+                    "[{y: y for y in values} for left in values for right in values]",
+                ),
+                ("/a.py", "{y: y for y in values}"),
+                ("/a.py", "{z: z for z in values}"),
+                ("/z.py", "{v: v for v in values}"),
+            ]
+            .map(|(path, expression)| (files[path], expression.to_string()))
+        );
     }
 
     #[test]
