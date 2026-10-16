@@ -8199,17 +8199,19 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             ArgumentsIter::from_ast(arguments),
             &mut call_arguments,
             &mut |builder, (argument_index, expr, tcx)| {
-                builder.infer_chalk_if_then_else_argument(
-                    chalk_if_then_else.as_ref(),
-                    argument_index,
-                    |builder| {
-                        if has_prepared_typed_dict_constructor {
-                            builder.get_or_infer_expression(expr, tcx)
-                        } else {
-                            builder.infer_expression(expr, tcx)
-                        }
-                    },
-                )
+                builder.infer_chalk_call_argument(callable_type, call_expression, expr, |builder| {
+                    builder.infer_chalk_if_then_else_argument(
+                        chalk_if_then_else.as_ref(),
+                        argument_index,
+                        |builder| {
+                            if has_prepared_typed_dict_constructor {
+                                builder.get_or_infer_expression(expr, tcx)
+                            } else {
+                                builder.infer_expression(expr, tcx)
+                            }
+                        },
+                    )
+                })
             },
             &mut bindings,
             call_expression_tcx,
