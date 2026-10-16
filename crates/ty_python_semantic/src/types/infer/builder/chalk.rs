@@ -7,7 +7,7 @@ use crate::{
     place::{Place, imported_symbol, place_from_declarations},
     reachability::DeclarationsIteratorExtension,
     types::{
-        DataclassFlags, MemberLookupPolicy, Type, TypeAndQualifiers, TypeQualifiers,
+        DataclassFlags, MemberLookupPolicy, Type, TypeAndQualifiers, TypeContext, TypeQualifiers,
         infer::{TypeInferenceBuilder, nearest_enclosing_class},
         tuple::{Tuple, TupleType},
     },
@@ -77,6 +77,51 @@ impl<'ast> FeaturePath<'ast> {
             root,
             members,
         })
+    }
+}
+
+//Identify named param positionally or by keyword
+fn chalk_argument_has_role(
+    arguments: &ast::Arguments,
+    argument: &ast::Expr,
+    name: &str,
+    position: usize,
+) -> bool {
+    arguments
+        .find_argument_value(name, position)
+        .is_some_and(|candidate| std::ptr::eq(candidate, argument))
+}
+
+// Identify ordinary positional expressions. Chalk also permits row-scoped `where`, `group_by`,
+// and `agg` expressions through `*args`, but ty infers variadic arguments before this call hook
+// runs. Supporting those requires installing the row root during variadic argument preparation.
+fn chalk_argument_is_positional(arguments: &ast::Arguments, argument: &ast::Expr) -> bool {
+    arguments
+        .args
+        .iter()
+        .filter(|candidate| !candidate.is_starred_expr())
+        .any(|candidate| std::ptr::eq(candidate, argument))
+}
+
+//Identify a specific keyword argument
+fn chalk_argument_is_keyword(arguments: &ast::Arguments, argument: &ast::Expr, name: &str) -> bool {
+    arguments
+        .find_keyword(name)
+        .map(|keyword| &keyword.value)
+        .is_some_and(|candidate| std::ptr::eq(candidate, argument))
+}
+
+fn chalk_row_source_expression(expression: &ast::Expr) -> Option<&ast::Expr> {
+    match expression {
+        ast::Expr::Subscript(subscript) => chalk_row_source_expression(&subscript.value),
+        ast::Expr::Call(call) => {
+            let attribute = call.func.as_attribute_expr()?;
+            if !matches!(attribute.attr.as_str(), "where" | "group_by") {
+                return None;
+            }
+            chalk_row_source_expression(&attribute.value)
+        }
+        _ => Some(expression),
     }
 }
 
@@ -206,6 +251,84 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
             }
             _ => {}
         }
+    }
+
+    pub(super) fn infer_chalk_call_argument<T>(
+        &mut self,
+        callable_type: Type<'db>,
+        call: &ast::ExprCall,
+        argument: &ast::Expr,
+        infer: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let Some(root) =
+            self.chalk_underscore_root_for_call_argument(callable_type, call, argument)
+        else {
+            return infer(self);
+        };
+        self.infer_with_chalk_underscore_root(root, infer)
+    }
+
+    fn chalk_underscore_root_for_call_argument(
+        &self,
+        callable_type: Type<'db>,
+        call: &ast::ExprCall,
+        argument: &ast::Expr,
+    ) -> Option<Type<'db>> {
+        let arguments = &call.arguments;
+        let (function, is_bound) = match callable_type {
+            Type::FunctionLiteral(function) => (function, false),
+            Type::BoundMethod(method) => (method.function(self.db()), true),
+            _ => return None,
+        };
+        let name = function.name(self.db());
+        if !matches!(
+            name.as_str(),
+            "max_by"
+                | "min_by"
+                | "max_by_n"
+                | "min_by_n"
+                | "where"
+                | "group_by"
+                | "agg"
+                | "approx_top_k"
+        ) {
+            return None;
+        }
+        let module = file_to_module(self.db(), function.file(self.db()))?;
+        let module_name = module.name(self.db());
+
+        // The normal call binder validates the signature. This only identifies expressions whose
+        // underscore namespace depends on another part of the call.
+        let row_source = match (module_name.as_str(), name.as_str(), is_bound) {
+            ("chalk.functions", "max_by" | "min_by" | "max_by_n" | "min_by_n", false)
+                if chalk_argument_has_role(arguments, argument, "sort", 1) =>
+            {
+                arguments.find_argument_value("dataframe", 0)?
+            }
+            ("chalk.features.underscore", "max_by" | "min_by" | "max_by_n" | "min_by_n", true)
+                if chalk_argument_has_role(arguments, argument, "sort", 0) =>
+            {
+                &*call.func.as_attribute_expr()?.value
+            }
+            ("chalk.features.underscore", "where" | "group_by" | "agg", true)
+                if chalk_argument_is_positional(arguments, argument) =>
+            {
+                &*call.func.as_attribute_expr()?.value
+            }
+            ("chalk.features.underscore", "approx_top_k", true)
+                if chalk_argument_is_keyword(arguments, argument, "by") =>
+            {
+                &*call.func.as_attribute_expr()?.value
+            }
+            _ => return None,
+        };
+
+        let row_source = chalk_row_source_expression(row_source)?;
+        let receiver_ty = self.try_expression_type(row_source).unwrap_or_else(|| {
+            self.speculate_without_diagnostics()
+                .infer_expression(row_source, TypeContext::default())
+        });
+        self.chalk_subscript_underscore_root(receiver_ty)
     }
 
     pub(super) fn chalk_if_then_else_refinements(
@@ -366,6 +489,14 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
         let Some(root) = self.chalk_subscript_underscore_root(receiver_ty) else {
             return infer(self);
         };
+        self.infer_with_chalk_underscore_root(root, infer)
+    }
+
+    fn infer_with_chalk_underscore_root<T>(
+        &mut self,
+        root: Type<'db>,
+        infer: impl FnOnce(&mut Self) -> T,
+    ) -> T {
         let original_len = self.chalk_refinements.underscore_roots.len();
         self.chalk_refinements.underscore_roots.push(root);
         let result = infer(self);
@@ -636,6 +767,19 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
                 )
                 .place
                 .is_undefined()
+            {
+                return None;
+            }
+            let terminal_member = &path.members.last()?.1.id;
+            if path.members.len() > 1
+                && !root_ty
+                    .member_lookup_with_policy(
+                        speculative.db(),
+                        terminal_member.clone(),
+                        MemberLookupPolicy::NO_GETATTR_LOOKUP,
+                    )
+                    .place
+                    .is_undefined()
             {
                 return None;
             }
