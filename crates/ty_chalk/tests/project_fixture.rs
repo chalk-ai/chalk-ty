@@ -60,6 +60,54 @@ fn fixture_db(files: &[(&str, &str)]) -> TestDb {
 }
 
 #[test]
+fn nested_resolver_import_scope_diagnostics_and_edits() {
+    let source = "from chalk import online\nimport math\ndef factory():\n    @online\n    def resolver(value: int):\n        return math.gcd(value, 2)\n    return resolver\n";
+    let mut db = fixture_db(&[("features.py", source)]);
+    let input = alignment_input(&db);
+    let file = system_path_to_file(&db, "/project/features.py").unwrap();
+
+    for (edited, expected) in [
+        (source.to_string(), vec!["math.gcd(value, 2)"]),
+        (
+            source.replace("from chalk import online\n", "").replace(
+                "def factory():\n",
+                "def factory():\n    from chalk import online\n",
+            ),
+            vec!["math.gcd(value, 2)"],
+        ),
+        (
+            source.replace("def factory():", "def factory(online):"),
+            vec![],
+        ),
+        (source.to_string(), vec!["math.gcd(value, 2)"]),
+        (
+            source.replace(
+                "    @online",
+                "    # chalk: ignore[unsupported-function]\n    @online",
+            ),
+            vec![],
+        ),
+    ] {
+        db.write_file("/project/features.py", &edited).unwrap();
+        let diagnostics = chalk_diagnostics_for_file(&db, input, file);
+        let actual = diagnostics
+            .iter()
+            .map(|diagnostic| &edited[diagnostic.range])
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected, "{edited}");
+        for diagnostic in diagnostics {
+            assert_eq!(diagnostic.code(), "unsupported-function");
+            let details = diagnostic.unsupported_function_details().unwrap();
+            assert_eq!(details.targets.len(), 1);
+            assert_eq!(
+                details.targets[0].reason,
+                CallNoMatchReason::MissingRegistryEntry
+            );
+        }
+    }
+}
+
+#[test]
 fn accel_behavioral_matrix() {
     let db = fixture_db(&[("features.py", include_str!("fixtures/accel/features.py"))]);
     let source_path = SystemPath::new("/project/features.py");
