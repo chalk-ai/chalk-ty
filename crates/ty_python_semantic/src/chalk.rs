@@ -11,10 +11,12 @@ use ty_module_resolver::{Module, ModuleName, file_to_module, resolve_module, res
 use ty_python_core::ast_ids::HasScopedUseId;
 pub use ty_python_core::definition::Definition;
 use ty_python_core::definition::{DefinitionKind, DefinitionState};
+use ty_python_core::place::PlaceExprRef;
 use ty_python_core::scope::NodeWithScopeKind;
-use ty_python_core::semantic_index;
+use ty_python_core::{BoundnessAnalysis, EnclosingSnapshotResult, semantic_index};
 
 use crate::place::{Definedness, Place};
+use crate::reachability::evaluate_reachability_with_cache;
 use crate::types::{KnownBoundMethodType, Type, TypeDefinition, binding_type};
 use crate::{
     HasType, ImportAliasResolution, SemanticModel, definitions_for_attribute, definitions_for_name,
@@ -842,10 +844,79 @@ fn directly_imported_symbols(
     let name_ref = ast::ExprRef::Name(name);
     let scope = index.expression_scope_id(&name_ref);
     let use_def = index.use_def_map(scope);
+    let mut bindings = use_def.bindings_at_use(name.scoped_use_id(db, file));
+    let is_free_variable = bindings
+        .clone()
+        .all(|binding| matches!(binding.binding, DefinitionState::Undefined));
+    if is_free_variable {
+        // Free variables have no binding in the use's scope. Consult ty's enclosing snapshots for
+        // eager definition-time visibility, or all reachable bindings once lookup crosses a lazy
+        // scope.
+        let mut resolve_in_global_scope = false;
+        for (enclosing_scope, _) in index.visible_ancestor_scopes(scope) {
+            if resolve_in_global_scope && !enclosing_scope.is_global() {
+                continue;
+            }
+            let table = index.place_table(enclosing_scope);
+            let Some(symbol_id) = table.symbol_id(name.id.as_str()) else {
+                continue;
+            };
+            let symbol = table.symbol(symbol_id);
+            // A `global` declaration redirects lookup before the current-scope check below.
+            if symbol.is_global() {
+                resolve_in_global_scope = true;
+                continue;
+            }
+            if !symbol.is_local() {
+                continue;
+            }
+            // A local name that is unbound at this use raises `UnboundLocalError`; Python does not
+            // fall back to a definition from an enclosing scope.
+            if enclosing_scope == scope {
+                break;
+            }
+            bindings = match index.enclosing_snapshot(
+                enclosing_scope,
+                PlaceExprRef::Symbol(symbol),
+                scope,
+            ) {
+                EnclosingSnapshotResult::FoundBindings(bindings) => bindings,
+                EnclosingSnapshotResult::NoLongerInEagerContext => index
+                    .use_def_map(enclosing_scope)
+                    .reachable_symbol_bindings(symbol_id),
+                EnclosingSnapshotResult::FoundConstraint(_) | EnclosingSnapshotResult::NotFound => {
+                    return false;
+                }
+            };
+            break;
+        }
+    }
+    let boundness = bindings.boundness_analysis();
+    let predicates = bindings.predicates();
+    let reachability_constraints = bindings.reachability_constraints();
     let mut saw_binding = false;
     let mut complete = true;
 
-    for binding in use_def.bindings_at_use(name.scoped_use_id(db, file)) {
+    for binding in bindings {
+        let reachability = evaluate_reachability_with_cache(
+            db,
+            None,
+            reachability_constraints,
+            predicates,
+            binding.reachability_constraint,
+        );
+        if reachability.is_always_false() {
+            continue;
+        }
+        // Lazy enclosing bindings retain the initial undefined state even when ty assumes the
+        // symbol is bound. An always-visible undefined state is synthetic when a reachable
+        // definition exists, but an ambiguous state represents a real possibly-unbound path.
+        if boundness == BoundnessAnalysis::AssumeBound
+            && matches!(binding.binding, DefinitionState::Undefined)
+            && reachability.is_always_true()
+        {
+            continue;
+        }
         saw_binding = true;
         let Some(definition) = binding.binding.definition() else {
             complete = false;

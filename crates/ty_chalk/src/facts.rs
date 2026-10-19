@@ -703,6 +703,207 @@ def root(): pass
     }
 
     #[test]
+    fn resolver_decorator_import_scopes() {
+        let mut actual = Vec::new();
+        let mut expected = Vec::new();
+        for installed in [false, true] {
+            for (label, source) in [
+                (
+                    "module import",
+                    "from chalk import online\ndef factory():\n    @online\n    def root(): pass\n    return root\n",
+                ),
+                (
+                    "local import",
+                    "def factory():\n    from chalk import online\n    @online\n    def root(): pass\n    return root\n",
+                ),
+                (
+                    "enclosing import",
+                    "def outer():\n    from chalk import online\n    def factory():\n        @online\n        def root(): pass\n        return root\n",
+                ),
+                (
+                    "aliased import",
+                    "from chalk import online as register\ndef factory():\n    @register(name='root')\n    def root(): pass\n    return root\n",
+                ),
+                (
+                    "module attribute",
+                    "import chalk\ndef factory():\n    @chalk.online\n    def root(): pass\n    return root\n",
+                ),
+                (
+                    "explicit global",
+                    "from chalk import online\ndef factory():\n    global online\n    @online\n    def root(): pass\n    return root\n",
+                ),
+                (
+                    "explicit nonlocal",
+                    "def outer():\n    from chalk import online\n    def factory():\n        nonlocal online\n        @online\n        def root(): pass\n        return root\n",
+                ),
+                (
+                    "class scope skipped",
+                    "from chalk import online\nclass Factory:\n    online = None\n    def factory(self):\n        @online\n        def root(): pass\n        return root\n",
+                ),
+                (
+                    "global skips enclosing parameter",
+                    "from chalk import online\ndef outer(online):\n    def factory():\n        global online\n        @online\n        def root(): pass\n        return root\n",
+                ),
+                (
+                    "eager class before reassignment",
+                    "def outer():\n    from chalk import online\n    class Factory:\n        @online\n        def root(): pass\n    online = None\n    return Factory\n",
+                ),
+                (
+                    "conditional approved imports",
+                    "def factory(flag):\n    if flag:\n        from chalk import online as register\n    else:\n        from chalk import offline as register\n    @register\n    def root(): pass\n    return root\n",
+                ),
+                (
+                    "conditional import dominates use",
+                    "def outer(flag):\n    if flag:\n        from chalk import online\n    else:\n        return None\n    def factory():\n        @online\n        def root(): pass\n        return root\n    return factory\n",
+                ),
+                (
+                    "eager conditional approved imports",
+                    "flag: bool\nif flag:\n    from chalk import online as register\nelse:\n    from chalk import offline as register\n@register\ndef root(): pass\n",
+                ),
+            ] {
+                let (db, file) = if installed {
+                    setup(source, &[])
+                } else {
+                    setup_with_search_paths(source, &[], &[], &[])
+                };
+                let facts = extract_file_facts(&db, file);
+                actual.push((installed, label, facts.resolver_roots.len()));
+                expected.push((installed, label, 1));
+            }
+        }
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn resolver_decorator_import_scopes_respect_shadowing() {
+        for source in [
+            "from chalk import online\ndef factory(online):\n    @online\n    def root(): pass\n    return root\n",
+            "from chalk import online\ndef factory():\n    online = lambda fn: fn\n    @online\n    def root(): pass\n    return root\n",
+            "from chalk import online\ndef factory():\n    @online\n    def root(): pass\n    from chalk import online\n    return root\n",
+            "from chalk import online\ndef factory():\n    from chalk import online\n    del online\n    @online\n    def root(): pass\n    return root\n",
+            "from chalk import online\ndef outer(online):\n    def factory():\n        @online\n        def root(): pass\n        return root\n",
+            "from chalk import online\nonline = lambda fn: fn\ndef factory():\n    @online\n    def root(): pass\n    return root\n",
+            "from chalk import online\ndef outer():\n    def factory():\n        @online\n        def root(): pass\n        return root\n    online = lambda fn: fn\n    return factory\n",
+            "from chalk import online\ndef outer(flag):\n    if flag:\n        from chalk import online\n    else:\n        online = lambda fn: fn\n    def factory():\n        @online\n        def root(): pass\n        return root\n",
+            "def outer(flag):\n    if flag:\n        from chalk import online\n    def factory():\n        @online\n        def root(): pass\n        return root\n",
+            "def outer():\n    try:\n        from chalk import online\n    except ImportError:\n        pass\n    def factory():\n        @online\n        def root(): pass\n        return root\n",
+            "def outer():\n    if False:\n        from chalk import online\n    def factory():\n        @online\n        def root(): pass\n        return root\n",
+            "flag: bool\nif flag:\n    from chalk import online\ndef factory():\n    @online\n    def root(): pass\n    return root\n",
+            "def outer():\n    class Factory:\n        @online\n        def root(): pass\n    from chalk import online\n    return Factory\n",
+            "from chalk import online\ndef factory():\n    @online\n    def root(): pass\n    return root\nonline = lambda fn: fn\n",
+        ] {
+            let (db, file) = setup_with_search_paths(source, &[], &[], &[]);
+            assert!(
+                extract_file_facts(&db, file).resolver_roots.is_empty(),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolver_decorator_additional_scopes() {
+        let mut actual = Vec::new();
+        let mut expected = Vec::new();
+        for installed in [false, true] {
+            for (label, count, source) in [
+                (
+                    "async factory",
+                    1,
+                    "from chalk import online\nasync def factory():\n    @online()\n    async def root(): pass\n    return root\n",
+                ),
+                (
+                    "three enclosing scopes",
+                    1,
+                    "def outer():\n    from chalk import online\n    def middle():\n        def factory():\n            @online\n            def root(): pass\n            return root\n        return factory\n    return middle\n",
+                ),
+                (
+                    "offline factory",
+                    1,
+                    "from chalk import offline\ndef factory():\n    @offline(name='root')\n    def root(): pass\n    return root\n",
+                ),
+                (
+                    "batch factory",
+                    1,
+                    "from chalk import batch\ndef factory():\n    @batch\n    def root(): pass\n    return root\n",
+                ),
+                (
+                    "realtime factory",
+                    1,
+                    "from chalk import realtime\ndef factory():\n    @realtime\n    def root(): pass\n    return root\n",
+                ),
+                (
+                    "module alias captured",
+                    1,
+                    "def outer():\n    import chalk as sdk\n    def factory():\n        @sdk.online()\n        def root(): pass\n        return root\n    return factory\n",
+                ),
+                (
+                    "global declaration in middle scope",
+                    1,
+                    "from chalk import online\ndef outer(online):\n    def middle():\n        global online\n        def factory():\n            @online\n            def root(): pass\n            return root\n        return factory\n    return middle\n",
+                ),
+                (
+                    "nonlocal through middle scope",
+                    1,
+                    "def outer():\n    from chalk import online\n    def middle():\n        nonlocal online\n        def factory():\n            @online\n            def root(): pass\n            return root\n        return factory\n    return middle\n",
+                ),
+                (
+                    "eager class global",
+                    1,
+                    "from chalk import online\nclass Factory:\n    @online\n    def root(self): pass\n",
+                ),
+                (
+                    "class binding invisible to method",
+                    0,
+                    "class Factory:\n    from chalk import online\n    def factory(self):\n        @online\n        def root(): pass\n        return root\n",
+                ),
+                (
+                    "annotation shadows global",
+                    0,
+                    "from chalk import online\ndef factory():\n    online: object\n    @online\n    def root(): pass\n    return root\n",
+                ),
+                (
+                    "unreachable assignment shadows global",
+                    0,
+                    "from chalk import online\ndef factory():\n    if False:\n        online = None\n    @online\n    def root(): pass\n    return root\n",
+                ),
+                (
+                    "deleted enclosing import",
+                    0,
+                    "def outer():\n    from chalk import online\n    del online\n    def factory():\n        @online\n        def root(): pass\n        return root\n    return factory\n",
+                ),
+                (
+                    "explicit global reassignment",
+                    0,
+                    "from chalk import online\ndef factory():\n    global online\n    online = lambda fn: fn\n    @online\n    def root(): pass\n    return root\n",
+                ),
+                (
+                    "try except approved imports",
+                    1,
+                    "def factory():\n    try:\n        from chalk import online as register\n    except ImportError:\n        from chalk import offline as register\n    @register\n    def root(): pass\n    return root\n",
+                ),
+                (
+                    "conditional enclosing approved imports",
+                    1,
+                    "def outer(flag):\n    if flag:\n        from chalk import online as register\n    else:\n        from chalk import offline as register\n    def factory():\n        @register\n        def root(): pass\n        return root\n    return factory\n",
+                ),
+            ] {
+                let (db, file) = if installed {
+                    setup(source, &[])
+                } else {
+                    setup_with_search_paths(source, &[], &[], &[])
+                };
+                actual.push((
+                    installed,
+                    label,
+                    extract_file_facts(&db, file).resolver_roots.len(),
+                ));
+                expected.push((installed, label, count));
+            }
+        }
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn attributes_calls_to_exact_named_functions_and_excludes_deferred_contexts() {
         let source = "\
 def target(): pass
