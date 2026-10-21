@@ -598,3 +598,43 @@ class User:
     # error: [unknown-argument]
     F.max_by(_.transactions[_.amount], order=reveal_type(_.shared))  # revealed: Resolved[int]
 ```
+
+## Starred row-dependent arguments
+
+Splatted positional arguments to Chalk's row-dependent methods use the relationship row namespace.
+Ordinary methods with the same spelling retain the surrounding namespace, and the relationship row
+does not leak past the call.
+
+```py
+from typing import Any
+
+from chalk.features import DataFrame, _, features
+
+@features
+class Transaction:
+    amount: float
+    category: str
+    shared: str
+
+class Ordinary:
+    def where(self, *filters: Any) -> Any: ...
+
+@features
+class User:
+    shared: int
+    transactions: DataFrame[Transaction]
+
+    _.transactions.where(*(
+        reveal_type(_.shared) != "",  # revealed: Resolved[str]
+    ))
+    _.transactions.group_by(*(
+        reveal_type(_.category),  # revealed: Resolved[str]
+    )).agg(*(
+        reveal_type(_.amount),  # revealed: Resolved[int | float]
+    ))
+
+    Ordinary().where(*(
+        reveal_type(_.shared),  # revealed: Resolved[int]
+    ))
+    reveal_type(_.shared)  # revealed: Resolved[int]
+```

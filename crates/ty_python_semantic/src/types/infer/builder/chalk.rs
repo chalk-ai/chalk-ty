@@ -92,14 +92,11 @@ fn chalk_argument_has_role(
         .is_some_and(|candidate| std::ptr::eq(candidate, argument))
 }
 
-// Identify ordinary positional expressions. Chalk also permits row-scoped `where`, `group_by`,
-// and `agg` expressions through `*args`, but ty infers variadic arguments before this call hook
-// runs. Supporting those requires installing the row root during variadic argument preparation.
+// Identify positional expressions, including `*args` inferred during variadic argument preparation.
 fn chalk_argument_is_positional(arguments: &ast::Arguments, argument: &ast::Expr) -> bool {
     arguments
         .args
         .iter()
-        .filter(|candidate| !candidate.is_starred_expr())
         .any(|candidate| std::ptr::eq(candidate, argument))
 }
 
@@ -266,6 +263,26 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
             return infer(self);
         };
         self.infer_with_chalk_underscore_root(root, infer)
+    }
+
+    pub(super) fn prepare_chalk_variadic_call_arguments(
+        &mut self,
+        callable_type: Type<'db>,
+        call: &ast::ExprCall,
+    ) {
+        for argument in &call.arguments.args {
+            let ast::Expr::Starred(starred) = argument else {
+                continue;
+            };
+            let Some(root) =
+                self.chalk_underscore_root_for_call_argument(callable_type, call, argument)
+            else {
+                continue;
+            };
+            self.infer_with_chalk_underscore_root(root, |builder| {
+                builder.get_or_infer_expression(&starred.value, TypeContext::default())
+            });
+        }
     }
 
     fn chalk_underscore_root_for_call_argument(
