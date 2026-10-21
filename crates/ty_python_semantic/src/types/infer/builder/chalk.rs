@@ -669,7 +669,12 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
         resolved_values: bool,
         diagnose_missing: bool,
     ) -> Option<ResolvedFeaturePath<'db>> {
-        self.store_chalk_expression_type(path.root_expression, root_ty);
+        let root_expression_ty = if self.is_chalk_features_symbol(root_ty, "_") {
+            current
+        } else {
+            root_ty
+        };
+        self.store_chalk_expression_type(path.root_expression, root_expression_ty);
 
         let mut members = Vec::with_capacity(path.members.len());
         let last_member = path.members.len() - 1;
