@@ -7897,6 +7897,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         // We don't call `Type::try_call`, because we want to perform type inference on the
         // arguments after matching them to parameters, but before checking that the argument types
         // are assignable to any parameter annotations.
+        self.prepare_chalk_variadic_call_arguments(callable_type, call_expression);
         let mut call_arguments = self.prepare_call_arguments(arguments);
         let chalk_if_then_else = self.chalk_if_then_else_refinements(callable_type, arguments);
 

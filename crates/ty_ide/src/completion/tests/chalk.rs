@@ -38,6 +38,37 @@ fn underscore_completion_uses_active_relationship_root() {
 }
 
 #[test]
+fn underscore_completion_uses_relationship_root_in_starred_arguments() {
+    for expression in [
+        "_.transactions.where(*(_.<CURSOR>,))",
+        "_.transactions.group_by(*(_.<CURSOR>,))",
+        "_.transactions.group_by(*(_.category,)).agg(*(_.<CURSOR>,))",
+    ] {
+        let source = format!(
+            "from chalk.features import DataFrame, _, features\n\n@features\nclass Transaction:\n    amount: float\n    category: str\n\n@features\nclass User:\n    user_only: int\n    transactions: DataFrame[Transaction]\n\n    {expression}\n"
+        );
+        completion_test_builder(&source)
+            .build()
+            .contains("amount")
+            .contains("category")
+            .not_contains("user_only");
+    }
+}
+
+#[test]
+fn starred_argument_relationship_root_does_not_leak() {
+    let test = completion_test_builder(
+        "from typing import Any\nfrom chalk.features import DataFrame, _, features\n\n@features\nclass Transaction:\n    amount: float\n\nclass Ordinary:\n    def where(self, *filters: Any) -> Any: ...\n\n@features\nclass User:\n    user_only: int\n    transactions: DataFrame[Transaction]\n\n    Ordinary().where(*(_.<CURSOR>,))\n",
+    );
+    test.build().contains("user_only").not_contains("amount");
+
+    let test = completion_test_builder(
+        "from chalk.features import DataFrame, _, features\n\n@features\nclass Transaction:\n    amount: float\n\n@features\nclass User:\n    user_only: int\n    transactions: DataFrame[Transaction]\n\n    (_.transactions.where(*(_.amount,)), _.<CURSOR>)\n",
+    );
+    test.build().contains("user_only").not_contains("amount");
+}
+
+#[test]
 fn functions_module_members() {
     for source in [
         "import chalk.functions as F\nF.<CURSOR>",
