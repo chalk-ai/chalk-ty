@@ -3187,6 +3187,8 @@ impl PartialOrd for CompletionRanker<'_> {
 
 #[cfg(test)]
 mod tests {
+    mod chalk;
+
     use insta::assert_snapshot;
     use ruff_python_ast::helpers::is_dunder;
     use ruff_python_ast::token::{TokenKind, Tokens};
