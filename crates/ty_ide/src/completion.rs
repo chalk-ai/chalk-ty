@@ -3187,6 +3187,8 @@ impl PartialOrd for CompletionRanker<'_> {
 
 #[cfg(test)]
 mod tests {
+    mod chalk;
+
     use insta::assert_snapshot;
     use ruff_python_ast::helpers::is_dunder;
     use ruff_python_ast::token::{TokenKind, Tokens};
@@ -3294,23 +3296,6 @@ mod tests {
         // Dunder attributes should not be stripped
         test.contains("__annotations__");
         // See `private_symbols_in_stub` for more comprehensive testing private of symbol filtering.
-    }
-
-    #[test]
-    fn chalk_functions_module_members() {
-        for source in [
-            "import chalk.functions as F\nF.<CURSOR>",
-            "from chalk import functions as F\nF.<CURSOR>",
-        ] {
-            let builder = completion_test_builder(source);
-            let test = builder.build();
-            test.contains("array_agg")
-                .contains("if_then_else")
-                .contains("max_by")
-                .contains("min_by")
-                .contains("url_extract_host")
-                .contains("zip_with");
-        }
     }
 
     #[test]
