@@ -1,11 +1,10 @@
 use ruff_python_ast::{self as ast, AnyNodeRef, name::Name};
 use ty_module_resolver::{ModuleName, file_to_module, resolve_module};
-use ty_python_core::{definition::DefinitionKind, place_table, scope::ScopeKind, use_def_map};
+use ty_python_core::scope::ScopeKind;
 
 use crate::{
     FxIndexMap,
-    place::{Place, imported_symbol, place_from_declarations},
-    reachability::DeclarationsIteratorExtension,
+    place::imported_symbol,
     types::{
         DataclassFlags, MemberLookupPolicy, Type, TypeAndQualifiers, TypeContext, TypeQualifiers,
         infer::{TypeInferenceBuilder, nearest_enclosing_class},
@@ -461,22 +460,13 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
         )
     }
 
-    fn chalk_symbolic_inner(&self, ty: Type<'db>) -> Option<Type<'db>> {
-        ["Resolved", "Windowed"].into_iter().find_map(|name| {
-            ty.specialization_of(self.db(), self.chalk_extension_class(name)?)?
-                .types(self.db())
-                .first()
-                .copied()
-        })
-    }
-
     fn chalk_subscript_underscore_root(&self, receiver_ty: Type<'db>) -> Option<Type<'db>> {
         let db = self.db();
         let dataframe = self
             .chalk_features_symbol("DataFrame")?
             .as_class_literal()?;
-        let mut inner = self.chalk_symbolic_inner(receiver_ty)?;
-        while let Some(nested) = self.chalk_symbolic_inner(inner) {
+        let mut inner = receiver_ty.chalk_symbolic_inner(db)?;
+        while let Some(nested) = inner.chalk_symbolic_inner(db) {
             inner = nested;
         }
         let packed = inner
@@ -532,7 +522,7 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
         let ty = self.infer_chalk_subscript(receiver_ty, |builder| {
             builder.infer_subscript_load_impl(receiver_ty, subscript)
         });
-        Some(self.chalk_symbolic_inner(ty).unwrap_or(ty))
+        Some(ty.chalk_symbolic_inner(self.db()).unwrap_or(ty))
     }
 
     fn chalk_windowed_inner(&self, ty: Type<'db>) -> Option<Type<'db>> {
@@ -566,7 +556,7 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
         } else {
             declared.inner_type()
         };
-        if is_chalk_feature && let Some(inner) = self.chalk_symbolic_inner(inferred) {
+        if is_chalk_feature && let Some(inner) = inferred.chalk_symbolic_inner(self.db()) {
             (declared, inner, true)
         } else {
             (declared, inferred, false)
@@ -621,60 +611,8 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
     }
 
     fn chalk_feature_member(&mut self, ty: Type<'db>, name: &str) -> Option<Type<'db>> {
-        let db = self.db();
-        let ty = ty.filter_union(db, |element| !element.is_none(db));
-        let (class, specialization) = ty
-            .nominal_class(self.db())?
-            .static_class_literal(self.db())?;
-        if !class.dataclass_params(self.db()).is_some_and(|params| {
-            params
-                .flags(self.db())
-                .contains(DataclassFlags::CHALK_FEATURES)
-        }) {
-            return None;
-        }
-
-        let body_scope = class.body_scope(self.db());
-        let table = place_table(self.db(), body_scope);
-        if let Some(symbol_id) = table.symbol_id(name) {
-            let declarations =
-                use_def_map(self.db(), body_scope).end_of_scope_symbol_declarations(symbol_id);
-            if declarations
-                .clone()
-                .any_reachable(self.db(), |declaration| {
-                    declaration.is_defined_and(|declaration| {
-                        !matches!(
-                            declaration.kind(self.db()),
-                            DefinitionKind::AnnotatedAssignment(..)
-                        )
-                    })
-                })
-            {
-                return None;
-            }
-            let declared =
-                place_from_declarations(self.db(), declarations).ignore_conflicting_declarations();
-            if declared.is_class_var() || declared.is_init_var() {
-                return None;
-            }
-            if let Place::Defined(place) = declared.place {
-                return Some(
-                    place
-                        .ty
-                        .apply_optional_specialization(self.db(), specialization)
-                        .chalk_feature_value_type(self.db(), self.file()),
-                );
-            }
-        }
-
-        if let Some(member) = ty
-            .instance_member(self.db(), name)
-            .ignore_possibly_undefined()
-        {
-            return Some(member);
-        }
-
-        None
+        ty.chalk_feature_member(self.db(), self.file(), name)
+            .map(|member| member.ty)
     }
 
     fn resolve_chalk_feature_path_from(
