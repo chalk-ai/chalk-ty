@@ -1,3 +1,5 @@
+mod chalk;
+
 use crate::docstring::{Docstring, DocstringFragment};
 use crate::goto::{Definitions, GotoTarget, docstring_for_call_definition, find_goto_target};
 use crate::{Db, MarkupKind, RangedValue};
@@ -77,6 +79,8 @@ pub fn hover(db: &dyn Db, file: File, offset: TextSize) -> Option<RangedValue<Ho
         if let Some(docstring) = typed_dict_key.docstring {
             contents.push(HoverContent::Docstring(Docstring::new(docstring)));
         }
+    } else if let Some(chalk_feature) = chalk::feature_path_hover(&model, &goto_target) {
+        contents.push(chalk_feature);
     } else if let Some(ty) = goto_target.inferred_type(&model) {
         tracing::debug!("Inferred type of covering node is {}", ty.display(db));
         let qualifiers = goto_target.type_qualifiers(&model);
@@ -395,6 +399,8 @@ impl fmt::Display for DisplayHoverContent<'_, '_> {
 
 #[cfg(test)]
 mod tests {
+    mod chalk;
+
     use crate::tests::{CursorTest, cursor_test};
     use crate::{MarkupKind, hover};
     use std::fmt::Write as _;

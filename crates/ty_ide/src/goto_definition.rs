@@ -32,6 +32,7 @@ pub fn goto_definition(
 
 #[cfg(test)]
 pub(super) mod test {
+    mod chalk;
 
     use crate::tests::{CursorTest, IntoDiagnostic};
     use crate::{NavigationTargets, RangedValue, goto_definition};
