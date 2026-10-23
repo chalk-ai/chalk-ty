@@ -28,6 +28,7 @@ pub(crate) enum ObservedCallTarget<'a, 'db> {
     Resolved(CallTarget<'db>),
     Known(KnownCallTarget),
     ModuleProvenance(&'a CallModuleProvenance),
+    RegistryMethod(&'static str),
     Deferred,
 }
 
@@ -45,6 +46,7 @@ pub(crate) enum CallMatchIdentity<'db> {
     Definition(Definition<'db>),
     Known(KnownCallTarget),
     ModuleSymbol { module: Box<str>, symbol: Name },
+    RegistryMethod(Name),
 }
 
 /// Compact registry identity retained for later deterministic diagnostics.
@@ -164,6 +166,7 @@ impl<'db> Matcher<'db> {
             ObservedCallTarget::ModuleProvenance(provenance) => {
                 Self::classify_module_provenance(provenance, call)
             }
+            ObservedCallTarget::RegistryMethod(name) => Self::classify_registry_method(name, call),
             ObservedCallTarget::Resolved(target) => self.classify_resolved(target, call),
         };
 
@@ -215,6 +218,30 @@ impl<'db> Matcher<'db> {
                     TypeMatch::Inconclusive => CallMatch::Inconclusive,
                 }
             }
+        }
+    }
+
+    fn classify_registry_method<'a>(
+        name: &'static str,
+        call: ObservedCall<'a, 'db>,
+    ) -> ClassifiedCall<'a, 'db> {
+        let Some(receiver) = call.receiver else {
+            return ClassifiedCall::Deferred;
+        };
+        let mut arguments = Vec::with_capacity(call.arguments.len() + 1);
+        arguments.push(ActualArgument::Positional(ActualType::Native(receiver)));
+        arguments.extend(call.arguments.iter().copied().map(ActualArgument::from));
+        ClassifiedCall::Registry {
+            target: CallMatchTarget {
+                identity: CallMatchIdentity::RegistryMethod(Name::new_static(name)),
+                kind: CallKind::Method,
+                name: Name::new_static(name),
+                display_label: name.into(),
+                definition_range: None,
+                receiver_parameter: Some(0),
+            },
+            arguments,
+            protocol: None,
         }
     }
 
@@ -711,6 +738,7 @@ mod tests {
         Definition,
         Known(KnownCallTarget),
         ModuleSymbol { module: String, symbol: String },
+        RegistryMethod(String),
     }
 
     #[derive(Debug, Eq, PartialEq)]
@@ -947,6 +975,9 @@ abs()
                         module: module.into(),
                         symbol: symbol.as_str().into(),
                     }
+                }
+                CallMatchIdentity::RegistryMethod(name) => {
+                    IdentitySummary::RegistryMethod(name.as_str().into())
                 }
             }
         }

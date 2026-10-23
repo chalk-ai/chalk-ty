@@ -7,9 +7,9 @@ use ty_python_semantic::chalk::{CallTargetKind, Definition};
 
 use crate::active_project::ChalkProjectInput;
 use crate::call_matcher::{CallMatchIdentity, CallMatchTarget};
-use crate::facts::{CallFact, HelperDefinitionFacts, UnsupportedExpressionFact, file_facts};
+use crate::facts::{CallFact, HelperDefinitionFacts, UnsupportedSyntaxFact, file_facts};
 use crate::suppression::SuppressionProblemKind;
-use crate::{CallNoMatchReason, UnsupportedExpressionKind};
+use crate::{CallNoMatchReason, UnsupportedSyntaxKind};
 
 type UnsupportedReason = CallNoMatchReason;
 
@@ -49,10 +49,10 @@ pub(crate) struct HelperDefaultCandidate {
     pub(crate) range: TextRange,
 }
 
-/// An unsuppressed unsupported expression reachable from a resolver.
+/// Unsuppressed unsupported syntax reachable from a resolver.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, salsa::Update, get_size2::GetSize)]
-pub(crate) struct UnsupportedExpressionCandidate {
-    pub(crate) kind: UnsupportedExpressionKind,
+pub(crate) struct UnsupportedSyntaxCandidate {
+    pub(crate) kind: UnsupportedSyntaxKind,
     pub(crate) file: File,
     pub(crate) range: TextRange,
 }
@@ -73,7 +73,7 @@ pub(crate) struct ProjectCandidates<'db> {
     suppression_problems: Box<[ProjectSuppressionProblem]>,
     resolver_defaults: Box<[ResolverDefaultCandidate]>,
     helper_defaults: Box<[HelperDefaultCandidate]>,
-    unsupported_expressions: Box<[UnsupportedExpressionCandidate]>,
+    unsupported_syntax: Box<[UnsupportedSyntaxCandidate]>,
 }
 
 impl<'db> ProjectCandidates<'db> {
@@ -120,11 +120,11 @@ impl<'db> ProjectCandidates<'db> {
             .filter(move |candidate| candidate.file == file)
     }
 
-    pub(crate) fn unsupported_expressions_for_file(
+    pub(crate) fn unsupported_syntax_for_file(
         &self,
         file: File,
-    ) -> impl Iterator<Item = &UnsupportedExpressionCandidate> {
-        self.unsupported_expressions
+    ) -> impl Iterator<Item = &UnsupportedSyntaxCandidate> {
+        self.unsupported_syntax
             .iter()
             .filter(move |candidate| candidate.file == file)
     }
@@ -155,16 +155,16 @@ pub(crate) fn project_candidates<'db>(
     let mut suppression_problems = Vec::new();
     let mut resolver_defaults = Vec::new();
     let mut helper_definitions = HashMap::new();
-    let mut unsupported_expressions =
-        HashMap::<Definition<'db>, Vec<&UnsupportedExpressionFact<'db>>>::new();
+    let mut unsupported_syntax =
+        HashMap::<Definition<'db>, Vec<&UnsupportedSyntaxFact<'db>>>::new();
 
     for file in python_files {
         let Some(facts) = file_facts(db, file) else {
             continue;
         };
 
-        for fact in &facts.unsupported_expressions {
-            unsupported_expressions
+        for fact in &facts.unsupported_syntax {
+            unsupported_syntax
                 .entry(fact.caller)
                 .or_default()
                 .push(fact);
@@ -210,8 +210,8 @@ pub(crate) fn project_candidates<'db>(
         first_party,
         calls,
         helper_definitions,
-        unsupported_expressions,
-        expression_candidates: Vec::new(),
+        unsupported_syntax,
+        syntax_candidates: Vec::new(),
         unsupported_defaults: Vec::new(),
         states: HashMap::new(),
         unsupported: Vec::new(),
@@ -244,7 +244,7 @@ pub(crate) fn project_candidates<'db>(
         compare_file_range(db, left.file, left.range, right.file, right.range)
     });
 
-    analyzer.expression_candidates.sort_by(|left, right| {
+    analyzer.syntax_candidates.sort_by(|left, right| {
         compare_file_range(db, left.file, left.range, right.file, right.range)
     });
 
@@ -254,7 +254,7 @@ pub(crate) fn project_candidates<'db>(
         suppression_problems: suppression_problems.into_boxed_slice(),
         resolver_defaults: resolver_defaults.into_boxed_slice(),
         helper_defaults: analyzer.unsupported_defaults.into_boxed_slice(),
-        unsupported_expressions: analyzer.expression_candidates.into_boxed_slice(),
+        unsupported_syntax: analyzer.syntax_candidates.into_boxed_slice(),
     }
 }
 
@@ -282,8 +282,8 @@ struct ReachabilityAnalyzer<'db> {
     calls: HashMap<Definition<'db>, Vec<CallSite<'db>>>,
     helper_definitions: HashMap<Definition<'db>, &'db HelperDefinitionFacts<'db>>,
     unsupported_defaults: Vec<HelperDefaultCandidate>,
-    unsupported_expressions: HashMap<Definition<'db>, Vec<&'db UnsupportedExpressionFact<'db>>>,
-    expression_candidates: Vec<UnsupportedExpressionCandidate>,
+    unsupported_syntax: HashMap<Definition<'db>, Vec<&'db UnsupportedSyntaxFact<'db>>>,
+    syntax_candidates: Vec<UnsupportedSyntaxCandidate>,
     states: HashMap<Definition<'db>, VisitState>,
     unsupported: Vec<UnsupportedCallCandidate<'db>>,
     cycles: Vec<CycleCandidate>,
@@ -298,7 +298,7 @@ impl<'db> ReachabilityAnalyzer<'db> {
         self.states.insert(definition, VisitState::Visiting);
         if analysis == Analysis::Unsupported {
             self.check_helper_definition(definition);
-            self.check_unsupported_expressions(definition);
+            self.check_unsupported_syntax(definition);
         }
 
         let calls = self.calls.get(&definition).cloned().unwrap_or_default();
@@ -309,15 +309,15 @@ impl<'db> ReachabilityAnalyzer<'db> {
         self.states.insert(definition, VisitState::Done);
     }
 
-    fn check_unsupported_expressions(&mut self, definition: Definition<'db>) {
-        if let Some(facts) = self.unsupported_expressions.get(&definition) {
-            self.expression_candidates.extend(
+    fn check_unsupported_syntax(&mut self, definition: Definition<'db>) {
+        if let Some(facts) = self.unsupported_syntax.get(&definition) {
+            self.syntax_candidates.extend(
                 facts
                     .iter()
                     .filter(|fact| {
                         fact.statement_suppression.is_none() && fact.function_suppression.is_none()
                     })
-                    .map(|fact| UnsupportedExpressionCandidate {
+                    .map(|fact| UnsupportedSyntaxCandidate {
                         kind: fact.kind,
                         file: definition.file(self.db),
                         range: fact.range,
@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn expression_candidates_preserve_source_order_and_unsupported_reachability() {
+    fn syntax_candidates_preserve_source_order_and_unsupported_reachability() {
         let (db, files) = setup(&[
             (
                 "/z.py",
@@ -585,7 +585,7 @@ def only_suppressed(values):
         let project = input(&db, &files, &["/z.py", "/a.py"]);
         let candidates = project_candidates(&db, project);
         let actual = candidates
-            .unsupported_expressions
+            .unsupported_syntax
             .iter()
             .map(|candidate| (candidate.file, text(&db, candidate.file, candidate.range)))
             .collect::<Vec<_>>();
@@ -616,7 +616,7 @@ from external import unsupported
 
 @online
 def root():
-    1 + \"type error\"
+    value: int = \"type error\"
     unsupported()
 ",
             ),

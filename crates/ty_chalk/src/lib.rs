@@ -9,14 +9,17 @@ mod diagnostic;
 mod facts;
 mod project;
 mod reachability;
+mod registry_operations;
 mod supported_functions;
 mod suppression;
 mod type_matcher;
+mod unsupported_syntax;
 
 pub use active_project::{ActiveChalkProject, ChalkProjectInput};
 pub use call_matcher::CallNoMatchReason;
 pub use diagnostic::{
-    ChalkDiagnostic, ChalkDiagnosticKind, ChalkDiagnosticSeverity, UnsupportedExpressionKind,
-    UnsupportedFunctionDetails, UnsupportedTargetDetail, chalk_diagnostics_for_file,
+    ChalkDiagnostic, ChalkDiagnosticKind, ChalkDiagnosticSeverity, UnsupportedFunctionDetails,
+    UnsupportedTargetDetail, chalk_diagnostics_for_file,
 };
 pub use project::{ChalkProject, ChalkProjectError, discover_chalk_project};
+pub use unsupported_syntax::UnsupportedSyntaxKind;
