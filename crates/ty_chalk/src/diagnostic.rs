@@ -12,6 +12,7 @@ use crate::supported_functions::{
     SupportedCall, current_supported_functions, present_supported_signatures,
 };
 use crate::suppression::{InvalidSuppressionReason, SuppressionProblemKind};
+use crate::unsupported_syntax::UnsupportedSyntaxKind;
 
 /// Keeps the source excerpt useful as a short inline diagnostic detail.
 const MAX_OBSERVED_CALL_CHARACTERS: usize = 160;
@@ -35,7 +36,7 @@ impl ChalkDiagnostic {
         match self.kind {
             ChalkDiagnosticKind::ResolverCycle => ChalkDiagnosticSeverity::Error,
             ChalkDiagnosticKind::UnsupportedFunction(_)
-            | ChalkDiagnosticKind::UnsupportedExpression(_)
+            | ChalkDiagnosticKind::UnsupportedSyntax(_)
             | ChalkDiagnosticKind::HelperParameterDefault
             | ChalkDiagnosticKind::ResolverParameterDefault
             | ChalkDiagnosticKind::UnknownSuppression { .. }
@@ -46,7 +47,7 @@ impl ChalkDiagnostic {
     pub fn code(&self) -> &'static str {
         match self.kind {
             ChalkDiagnosticKind::UnsupportedFunction(_)
-            | ChalkDiagnosticKind::UnsupportedExpression(_)
+            | ChalkDiagnosticKind::UnsupportedSyntax(_)
             | ChalkDiagnosticKind::HelperParameterDefault
             | ChalkDiagnosticKind::ResolverParameterDefault => "unsupported-function",
             ChalkDiagnosticKind::ResolverCycle => "resolver-cycle",
@@ -60,15 +61,28 @@ impl ChalkDiagnostic {
             ChalkDiagnosticKind::UnsupportedFunction(_) => {
                 Cow::Borrowed("Call is not supported by the static accelerator")
             }
-            ChalkDiagnosticKind::UnsupportedExpression(
-                UnsupportedExpressionKind::DictionaryComprehension,
+            ChalkDiagnosticKind::UnsupportedSyntax(
+                UnsupportedSyntaxKind::DictionaryComprehension,
             ) => Cow::Borrowed(
                 "Dictionary comprehensions are not supported by the static accelerator",
             ),
-            ChalkDiagnosticKind::UnsupportedExpression(
-                UnsupportedExpressionKind::MultipleGeneratorListComprehension,
+            ChalkDiagnosticKind::UnsupportedSyntax(
+                UnsupportedSyntaxKind::MultipleGeneratorListComprehension,
             ) => Cow::Borrowed(
                 "List comprehensions with multiple generators are not supported by the static accelerator",
+            ),
+            ChalkDiagnosticKind::UnsupportedSyntax(UnsupportedSyntaxKind::Operator(operator)) => {
+                Cow::Owned(format!(
+                    "Operator `{operator}` is not supported by the static accelerator"
+                ))
+            }
+            ChalkDiagnosticKind::UnsupportedSyntax(UnsupportedSyntaxKind::WhileStatement) => {
+                Cow::Borrowed("While statements are not supported by the static accelerator")
+            }
+            ChalkDiagnosticKind::UnsupportedSyntax(
+                UnsupportedSyntaxKind::ComplexAugmentedAssignmentTarget,
+            ) => Cow::Borrowed(
+                "Augmented assignment targets must be names for the static accelerator",
             ),
             ChalkDiagnosticKind::HelperParameterDefault => Cow::Borrowed(
                 "Helper parameter defaults must be scalar literals for the static accelerator",
@@ -96,20 +110,9 @@ pub enum ChalkDiagnosticKind {
     ResolverCycle,
     ResolverParameterDefault,
     HelperParameterDefault,
-    UnsupportedExpression(UnsupportedExpressionKind),
+    UnsupportedSyntax(UnsupportedSyntaxKind),
     UnknownSuppression { code: Box<str> },
     InvalidSuppression { reason: InvalidSuppressionReason },
-}
-
-/// Unsupported expression forms that cannot be expressed as registry operations.
-///
-/// Use this for structural restrictions, such as comprehension forms. Operations
-/// that can be represented as registry calls belong in registry matching instead.
-/// These restrictions share fact collection, reachability, suppression, and reporting.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, salsa::Update, get_size2::GetSize)]
-pub enum UnsupportedExpressionKind {
-    DictionaryComprehension,
-    MultipleGeneratorListComprehension,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -152,11 +155,11 @@ pub fn chalk_diagnostics_for_file(
     let mut diagnostics = Vec::new();
     diagnostics.extend(
         candidates
-            .unsupported_expressions_for_file(file)
+            .unsupported_syntax_for_file(file)
             .map(|candidate| ChalkDiagnostic {
                 file,
                 range: candidate.range,
-                kind: ChalkDiagnosticKind::UnsupportedExpression(candidate.kind),
+                kind: ChalkDiagnosticKind::UnsupportedSyntax(candidate.kind),
             }),
     );
     diagnostics.extend(candidates.helper_defaults_for_file(file).map(|candidate| {

@@ -2,18 +2,27 @@ use std::panic::AssertUnwindSafe;
 
 use ruff_db::files::File;
 use ruff_db::parsed::parsed_module;
-use ruff_python_ast::visitor::source_order::{SourceOrderVisitor, walk_expr, walk_stmt};
+use ruff_python_ast::visitor::source_order::{
+    SourceOrderVisitor, walk_comprehension, walk_expr, walk_stmt,
+};
 use ruff_python_ast::{self as ast};
 use ruff_text_size::{Ranged, TextRange};
 use ty_python_semantic::chalk::{CallTarget, Definition, ModuleOrigin};
 use ty_python_semantic::{Db, HasDefinition, HasType, SemanticModel};
 
+use crate::CallNoMatchReason;
 use crate::call_matcher::{
     CallMatch, CallMatchTarget, ObservedArgument, ObservedCall, ObservedCallTarget,
     match_call_target,
 };
+use crate::registry_operations::{
+    RegistryOperation, comprehension_registry_operations, expression_registry_operations,
+    statement_registry_operations,
+};
 use crate::suppression::{SuppressionCode, SuppressionProblem, Suppressions, extract_suppressions};
-use crate::{CallNoMatchReason, UnsupportedExpressionKind};
+use crate::unsupported_syntax::{
+    UnsupportedSyntax, UnsupportedSyntaxKind, unsupported_expression, unsupported_statement,
+};
 
 /// A named function recognized as a baked Chalk resolver root.
 #[derive(Clone, Debug, Eq, PartialEq, salsa::Update, get_size2::GetSize)]
@@ -36,7 +45,7 @@ pub(crate) struct HelperDefinitionFacts<'db> {
     pub(crate) unsupported_function_statement_suppression: Option<TextRange>,
 }
 
-/// A call expression physically contained in a named function body.
+/// A call or registry operation physically contained in a named function body.
 #[derive(Debug, Eq, PartialEq, salsa::Update, get_size2::GetSize)]
 pub(crate) struct CallFact<'db> {
     pub(crate) caller: Definition<'db>,
@@ -49,12 +58,12 @@ pub(crate) struct CallFact<'db> {
     pub(crate) unsupported_function_caller_suppression: Option<TextRange>,
 }
 
-/// An unsupported expression in a named function body, before reachability and suppression.
+/// Unsupported syntax in a named function body, before reachability and suppression.
 #[derive(Debug, Eq, PartialEq, salsa::Update, get_size2::GetSize)]
-pub(crate) struct UnsupportedExpressionFact<'db> {
+pub(crate) struct UnsupportedSyntaxFact<'db> {
     pub(crate) caller: Definition<'db>,
     pub(crate) range: TextRange,
-    pub(crate) kind: UnsupportedExpressionKind,
+    pub(crate) kind: UnsupportedSyntaxKind,
     pub(crate) statement_suppression: Option<TextRange>,
     pub(crate) function_suppression: Option<TextRange>,
 }
@@ -63,7 +72,7 @@ pub(crate) struct UnsupportedExpressionFact<'db> {
 #[derive(Debug, Eq, PartialEq, salsa::Update, get_size2::GetSize)]
 pub(crate) struct FileFacts<'db> {
     pub(crate) resolver_roots: Box<[ResolverRootFact<'db>]>,
-    pub(crate) unsupported_expressions: Box<[UnsupportedExpressionFact<'db>]>,
+    pub(crate) unsupported_syntax: Box<[UnsupportedSyntaxFact<'db>]>,
     pub(crate) calls: Box<[CallFact<'db>]>,
     pub(crate) helper_definitions: Box<[HelperDefinitionFacts<'db>]>,
     pub(crate) suppression_problems: Box<[SuppressionProblem]>,
@@ -81,7 +90,7 @@ fn extract_file_facts(db: &dyn Db, file: File) -> FileFacts<'_> {
         statement: None,
         resolver_roots: Vec::new(),
         calls: Vec::new(),
-        unsupported_expressions: Vec::new(),
+        unsupported_syntax: Vec::new(),
         helper_definitions: Vec::new(),
     };
     visitor.visit_body(&parsed.syntax().body);
@@ -89,7 +98,7 @@ fn extract_file_facts(db: &dyn Db, file: File) -> FileFacts<'_> {
     FileFacts {
         resolver_roots: visitor.resolver_roots.into_boxed_slice(),
         calls: visitor.calls.into_boxed_slice(),
-        unsupported_expressions: visitor.unsupported_expressions.into_boxed_slice(),
+        unsupported_syntax: visitor.unsupported_syntax.into_boxed_slice(),
         helper_definitions: visitor.helper_definitions.into_boxed_slice(),
         suppression_problems: suppressions.problems,
     }
@@ -129,7 +138,7 @@ struct FactVisitor<'a, 'db> {
     caller: Option<Definition<'db>>,
     statement: Option<TextRange>,
     resolver_roots: Vec<ResolverRootFact<'db>>,
-    unsupported_expressions: Vec<UnsupportedExpressionFact<'db>>,
+    unsupported_syntax: Vec<UnsupportedSyntaxFact<'db>>,
     calls: Vec<CallFact<'db>>,
     helper_definitions: Vec<HelperDefinitionFacts<'db>>,
 }
@@ -323,31 +332,80 @@ impl<'a, 'db> FactVisitor<'a, 'db> {
         });
     }
 
-    fn collect_unsupported_expression_fact(&mut self, expression: &ast::Expr) {
+    fn collect_first_unsupported_registry_operation(
+        &mut self,
+        operations: impl IntoIterator<Item = RegistryOperation<'a>>,
+    ) {
         let (Some(caller), Some(statement)) = (self.caller, self.statement) else {
             return;
         };
-        let kind = match expression {
-            ast::Expr::DictComp(_) => UnsupportedExpressionKind::DictionaryComprehension,
-            ast::Expr::ListComp(comprehension) if comprehension.generators.len() > 1 => {
-                UnsupportedExpressionKind::MultipleGeneratorListComprehension
-            }
-            _ => return,
+        let Some((operation, no_match)) = operations.into_iter().find_map(|operation| {
+            self.registry_operation_no_match(operation)
+                .map(|no_match| (operation, no_match))
+        }) else {
+            return;
         };
-        self.unsupported_expressions
-            .push(UnsupportedExpressionFact {
-                caller,
-                range: expression.range(),
-                kind,
-                statement_suppression: self.statement_suppression(statement),
-                function_suppression: self.function_suppression(caller),
-            });
+        self.calls.push(CallFact {
+            caller,
+            range: operation.range,
+            targets: Box::default(),
+            no_matches: vec![no_match].into_boxed_slice(),
+            unsupported_function_statement_suppression: self.statement_suppression(statement),
+            unsupported_function_caller_suppression: self.function_suppression(caller),
+        });
+    }
+
+    fn registry_operation_no_match(
+        &self,
+        operation: RegistryOperation<'a>,
+    ) -> Option<(CallMatchTarget<'db>, CallNoMatchReason)> {
+        let receiver = operation.receiver.inferred_type(self.model)?;
+        let argument = if let Some(argument) = operation.argument {
+            Some(ObservedArgument::Positional(
+                argument.inferred_type(self.model)?,
+            ))
+        } else {
+            None
+        };
+        let CallMatch::NoMatch { target, reason } = match_call_target(
+            self.model.db(),
+            ObservedCall {
+                target: ObservedCallTarget::RegistryMethod(operation.method),
+                arguments: argument.as_slice(),
+                receiver: Some(receiver),
+            },
+        ) else {
+            return None;
+        };
+        Some((target, reason))
+    }
+
+    fn record_unsupported_syntax_fact(&mut self, unsupported: UnsupportedSyntax) {
+        let (Some(caller), Some(statement)) = (self.caller, self.statement) else {
+            return;
+        };
+        self.unsupported_syntax.push(UnsupportedSyntaxFact {
+            caller,
+            range: unsupported.range,
+            kind: unsupported.kind,
+            statement_suppression: self.statement_suppression(statement),
+            function_suppression: self.function_suppression(caller),
+        });
     }
 }
 
 impl<'a> SourceOrderVisitor<'a> for FactVisitor<'a, '_> {
     fn visit_stmt(&mut self, statement: &'a ast::Stmt) {
         let enclosing_statement = self.statement.replace(statement.range());
+        let has_caller = self.caller.is_some();
+        if has_caller && let Some(unsupported) = unsupported_statement(statement) {
+            self.record_unsupported_syntax_fact(unsupported);
+        }
+        if has_caller {
+            self.collect_first_unsupported_registry_operation(statement_registry_operations(
+                statement,
+            ));
+        }
         match statement {
             ast::Stmt::FunctionDef(function) => self.visit_function(function),
             ast::Stmt::ClassDef(class) => {
@@ -364,16 +422,33 @@ impl<'a> SourceOrderVisitor<'a> for FactVisitor<'a, '_> {
     fn visit_annotation(&mut self, _annotation: &'a ast::Expr) {}
 
     fn visit_expr(&mut self, expression: &'a ast::Expr) {
-        self.collect_unsupported_expression_fact(expression);
+        let has_caller = self.caller.is_some();
+        if has_caller && let Some(unsupported) = unsupported_expression(expression) {
+            self.record_unsupported_syntax_fact(unsupported);
+        }
 
         if matches!(expression, ast::Expr::Lambda(_) | ast::Expr::DictComp(_)) {
             return;
         }
 
+        if has_caller {
+            self.collect_first_unsupported_registry_operation(expression_registry_operations(
+                expression,
+            ));
+        }
         if let ast::Expr::Call(call) = expression {
             self.visit_call(call);
         }
         walk_expr(self, expression);
+    }
+
+    fn visit_comprehension(&mut self, comprehension: &'a ast::Comprehension) {
+        if self.caller.is_some() {
+            self.collect_first_unsupported_registry_operation(comprehension_registry_operations(
+                comprehension,
+            ));
+        }
+        walk_comprehension(self, comprehension);
     }
 }
 
