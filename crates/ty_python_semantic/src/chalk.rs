@@ -191,6 +191,38 @@ fn chalk_feature_completion_receiver<'db>(
         .then_some(receiver)
 }
 
+/// The owning feature class and declared value type of a resolved Chalk feature path member.
+pub struct ChalkFeaturePathMember<'db> {
+    pub owner: String,
+    pub declared_ty: Type<'db>,
+}
+
+/// Returns feature metadata for an attribute inferred as a Chalk symbolic feature path.
+pub fn chalk_feature_path_member<'db>(
+    model: &SemanticModel<'db>,
+    attribute: &ast::ExprAttribute,
+) -> Option<ChalkFeaturePathMember<'db>> {
+    attribute
+        .inferred_type(model)?
+        .chalk_symbolic_inner(model.db())?;
+
+    let mut receiver = match attribute.value.inferred_type(model)? {
+        Type::ClassLiteral(class) => {
+            Type::instance(model.db(), class.default_specialization(model.db()))
+        }
+        receiver => receiver,
+    };
+    while let Some(inner) = receiver.chalk_symbolic_inner(model.db()) {
+        receiver = inner;
+    }
+    let member =
+        receiver.chalk_feature_member(model.db(), model.file(), attribute.attr.as_str())?;
+    Some(ChalkFeaturePathMember {
+        owner: member.owner.name(model.db()).to_string(),
+        declared_ty: member.ty,
+    })
+}
+
 /// The kind of statically resolved definition targeted by a call.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, salsa::Update, get_size2::GetSize)]
 pub enum CallTargetKind {

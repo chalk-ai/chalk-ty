@@ -1,5 +1,6 @@
 use ruff_db::files::File;
 use ty_module_resolver::{Module, ModuleName, file_to_module, resolve_module};
+use ty_python_core::{definition::DefinitionKind, place_table, use_def_map};
 
 use super::class::{CodeGeneratorKind, FieldKind};
 use super::constraints::ConstraintSetBuilder;
@@ -14,10 +15,18 @@ use crate::chalk::{
     ChalkTypeShape, ModuleOrigin, module_ownership_origin,
 };
 use crate::db::Db;
-use crate::place::{DefinedPlace, Definedness, Place, PlaceAndQualifiers, imported_symbol};
+use crate::place::{
+    DefinedPlace, Definedness, Place, PlaceAndQualifiers, imported_symbol, place_from_declarations,
+};
+use crate::reachability::DeclarationsIteratorExtension;
 
 const CHALK_FEATURES_MODULE: &str = "chalk.features";
 const CHALK_EXTENSIONS_MODULE: &str = "ty_chalk_extensions";
+
+pub(crate) struct ChalkFeatureMember<'db> {
+    pub(crate) owner: StaticClassLiteral<'db>,
+    pub(crate) ty: Type<'db>,
+}
 
 impl<'db> Type<'db> {
     fn chalk_features_instance_class(
@@ -33,6 +42,76 @@ impl<'db> Type<'db> {
 
     pub(crate) fn chalk_is_features_instance(self, db: &'db dyn Db) -> bool {
         self.chalk_features_instance_class(db).is_some()
+    }
+
+    pub(crate) fn chalk_symbolic_inner(self, db: &'db dyn Db) -> Option<Type<'db>> {
+        let instance = self.as_nominal_instance()?;
+        if !matches!(instance.class_name(db).as_str(), "Resolved" | "Windowed")
+            || instance.class_module_name(db)?.as_str() != CHALK_EXTENSIONS_MODULE
+        {
+            return None;
+        }
+        let (_, specialization) = self.nominal_class(db)?.static_class_literal(db)?;
+        specialization?.types(db).first().copied()
+    }
+
+    pub(crate) fn chalk_feature_member(
+        self,
+        db: &'db dyn Db,
+        file: File,
+        name: &str,
+    ) -> Option<ChalkFeatureMember<'db>> {
+        let ty = self.filter_union(db, |element| !element.is_none(db));
+        let (class, specialization) = ty.nominal_class(db)?.static_class_literal(db)?;
+        if !class
+            .dataclass_params(db)
+            .is_some_and(|params| params.flags(db).contains(DataclassFlags::CHALK_FEATURES))
+        {
+            return None;
+        }
+
+        for base in class.iter_mro(db, specialization) {
+            let ClassBase::Class(base) = base else {
+                continue;
+            };
+            let Some((owner, owner_specialization)) = base.static_class_literal(db) else {
+                continue;
+            };
+            let body_scope = owner.body_scope(db);
+            let table = place_table(db, body_scope);
+            if let Some(symbol_id) = table.symbol_id(name) {
+                let declarations =
+                    use_def_map(db, body_scope).end_of_scope_symbol_declarations(symbol_id);
+                if declarations.clone().any_reachable(db, |declaration| {
+                    declaration.is_defined_and(|declaration| {
+                        !matches!(
+                            declaration.kind(db),
+                            DefinitionKind::AnnotatedAssignment(..)
+                        )
+                    })
+                }) {
+                    return None;
+                }
+                let declared =
+                    place_from_declarations(db, declarations).ignore_conflicting_declarations();
+                if declared.is_class_var() || declared.is_init_var() {
+                    return None;
+                }
+                if let Place::Defined(place) = declared.place {
+                    return Some(ChalkFeatureMember {
+                        owner,
+                        ty: place
+                            .ty
+                            .apply_optional_specialization(db, owner_specialization)
+                            .chalk_feature_value_type(db, file),
+                    });
+                }
+            }
+        }
+
+        ty.instance_member(db, name)
+            .ignore_possibly_undefined()
+            .map(|ty| ChalkFeatureMember { owner: class, ty })
     }
 
     pub(crate) fn chalk_type_shape(self, db: &'db dyn Db) -> ChalkTypeShape<'db> {
