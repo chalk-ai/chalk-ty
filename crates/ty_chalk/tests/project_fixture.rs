@@ -183,7 +183,7 @@ fn assert_helper_default_warnings(
         for diagnostic in chalk_diagnostics_for_file(db, input, file) {
             if matches!(
                 diagnostic.kind,
-                ty_chalk::ChalkDiagnosticKind::UnsupportedExpression(_)
+                ty_chalk::ChalkDiagnosticKind::UnsupportedSyntax(_)
             ) {
                 continue;
             }
@@ -731,7 +731,7 @@ fn comprehension_calls_warn() {
         .filter(|diagnostic| {
             !matches!(
                 diagnostic.kind,
-                ty_chalk::ChalkDiagnosticKind::UnsupportedExpression(_)
+                ty_chalk::ChalkDiagnosticKind::UnsupportedSyntax(_)
             )
         })
         .collect::<Vec<_>>();
@@ -922,7 +922,7 @@ fn assert_alignment_diagnostics(
             );
             if matches!(
                 diagnostic.kind,
-                ty_chalk::ChalkDiagnosticKind::UnsupportedExpression(_)
+                ty_chalk::ChalkDiagnosticKind::UnsupportedSyntax(_)
             ) {
                 continue;
             }
@@ -1033,8 +1033,8 @@ fn assert_dictionary_comprehensions(
         let source = source_text(db, file);
         for diagnostic in chalk_diagnostics_for_file(db, input, file) {
             if diagnostic.kind
-                == ty_chalk::ChalkDiagnosticKind::UnsupportedExpression(
-                    ty_chalk::UnsupportedExpressionKind::DictionaryComprehension,
+                == ty_chalk::ChalkDiagnosticKind::UnsupportedSyntax(
+                    ty_chalk::UnsupportedSyntaxKind::DictionaryComprehension,
                 )
             {
                 assert_eq!(diagnostic.code(), "unsupported-function");
@@ -1173,8 +1173,8 @@ fn multiple_generator_list_comprehensions_and_controls() {
         for diagnostic in diagnostics {
             assert_eq!(
                 diagnostic.kind,
-                ty_chalk::ChalkDiagnosticKind::UnsupportedExpression(
-                    ty_chalk::UnsupportedExpressionKind::MultipleGeneratorListComprehension,
+                ty_chalk::ChalkDiagnosticKind::UnsupportedSyntax(
+                    ty_chalk::UnsupportedSyntaxKind::MultipleGeneratorListComprehension,
                 )
             );
             assert_eq!(&source[diagnostic.range], expression);
@@ -1185,4 +1185,335 @@ fn multiple_generator_list_comprehensions_and_controls() {
             );
         }
     }
+}
+
+#[test]
+fn registry_operations_report_unaccelerable_list_operations() {
+    let source = r#"
+from chalk import online
+
+@online
+def resolver(values: list[int], other: list[int], text: str):
+    integer = values[0]
+    substring = text[1:]
+    total = integer + 1
+    sliced = values[1:]
+    combined = values + other
+    return integer, substring, total, sliced, combined
+"#;
+    let db = fixture_db(&[("features.py", source)]);
+    let file = system_path_to_file(&db, "/project/features.py").unwrap();
+    let diagnostics = chalk_diagnostics_for_file(&db, alignment_input(&db), file);
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| &source[diagnostic.range])
+            .collect::<Vec<_>>(),
+        ["values[1:]", "values + other"]
+    );
+    for diagnostic in diagnostics {
+        assert_eq!(diagnostic.code(), "unsupported-function");
+        assert_eq!(
+            diagnostic.message(),
+            "Call is not supported by the static accelerator"
+        );
+        let details = diagnostic.unsupported_function_details().unwrap();
+        assert_eq!(details.targets.len(), 1);
+        assert_eq!(
+            details.targets[0].reason,
+            CallNoMatchReason::SignatureMismatch
+        );
+        assert!(!details.supported_signatures.is_empty());
+    }
+}
+
+#[test]
+fn registry_operations_stop_at_first_unaccelerable_operation() {
+    let source = r#"
+from chalk import online
+
+@online
+def resolver(values: list[int], other: list[int]):
+    return values < other == values
+"#;
+    let db = fixture_db(&[("features.py", source)]);
+    let file = system_path_to_file(&db, "/project/features.py").unwrap();
+    let diagnostics = chalk_diagnostics_for_file(&db, alignment_input(&db), file);
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(&source[diagnostics[0].range], "values < other == values");
+    assert_eq!(
+        diagnostics[0]
+            .unsupported_function_details()
+            .unwrap()
+            .targets
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn registry_operations_treat_none_comparisons_as_null_checks() {
+    let source = r#"
+from chalk import online
+
+NONE = None
+
+@online
+def resolver(values: list[int] | None, other: list[int]):
+    return (
+        values != None,
+        None != values,
+        values == None,
+        None == values,
+        values != NONE,
+        NONE != values,
+        values == NONE,
+        NONE == values,
+        values == other,
+        values != other,
+    )
+"#;
+    let db = fixture_db(&[("features.py", source)]);
+    let file = system_path_to_file(&db, "/project/features.py").unwrap();
+    let diagnostics = chalk_diagnostics_for_file(&db, alignment_input(&db), file);
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| &source[diagnostic.range])
+            .collect::<Vec<_>>(),
+        ["values == other", "values != other"]
+    );
+}
+
+#[test]
+fn registry_operations_accept_accelerator_supported_signatures() {
+    let source = r#"
+from chalk import online
+
+def expressions(
+    left: int,
+    right: int,
+    text: str,
+    values: list[int],
+    left_set: set[int],
+    right_set: set[int],
+):
+    added = left + right
+    subtracted = left - right
+    multiplied = left * right
+    modulo = left % right
+    powered = left ** right
+    divided = left / right
+    floor_divided = left // right
+    unioned = left_set | right_set
+    intersected = left_set & right_set
+    positive = +left
+    negative = -left
+    negated = not left
+    compared = left < right <= added == subtracted != multiplied > modulo >= powered
+    contained = left in values
+    item = values[left]
+    substring = text[left:right]
+    either = left or right
+    both = left and right
+    selected = left if right else added
+    return (
+        divided, floor_divided, unioned, intersected, positive, negative,
+        negated, compared, contained, item, substring, either, both, selected,
+    )
+
+def statements(value: int):
+    value += 1
+    if value:
+        value -= 1
+    assert value
+    return value
+
+def comprehension(values: list[int]):
+    return [value for value in values if value]
+
+@online
+def resolver(
+    left: int,
+    right: int,
+    text: str,
+    values: list[int],
+    left_set: set[int],
+    right_set: set[int],
+):
+    return (
+        expressions(left, right, text, values, left_set, right_set),
+        statements(left),
+        comprehension(values),
+    )
+"#;
+    let db = fixture_db(&[("features.py", source)]);
+    let file = system_path_to_file(&db, "/project/features.py").unwrap();
+
+    assert_eq!(
+        chalk_diagnostics_for_file(&db, alignment_input(&db), file),
+        []
+    );
+}
+
+#[test]
+fn structurally_unsupported_statements_warn() {
+    let source = r#"
+from chalk import online
+
+def statements(value: int, values: list[int]):
+    values[0] += 1
+    while value:
+        value -= 1
+    return value
+
+@online
+def resolver(value: int, values: list[int]):
+    return statements(value, values)
+"#;
+    let db = fixture_db(&[("features.py", source)]);
+    let file = system_path_to_file(&db, "/project/features.py").unwrap();
+    let diagnostics = chalk_diagnostics_for_file(&db, alignment_input(&db), file);
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| (&source[diagnostic.range], diagnostic.message().into_owned()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "values[0]",
+                "Augmented assignment targets must be names for the static accelerator".to_owned(),
+            ),
+            (
+                "while",
+                "While statements are not supported by the static accelerator".to_owned(),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn registry_operations_report_across_ast_forms() {
+    let source = r#"
+from chalk import online
+
+def expressions(values: list[int], other: list[int]):
+    added = values + other
+    sliced = values[1:]
+    ordered = values < other
+    shifted = values << other
+    inverted = ~values
+    return added, sliced, ordered, shifted, inverted
+
+def statements(values: list[int], other: list[int]):
+    values += other
+    values <<= 1
+    return values
+
+def truthiness(value: bytes, values: list[bytes]):
+    either = value or b"fallback"
+    selected = 1 if value else 0
+    if value:
+        either = b"if"
+    return [item for item in values if item], selected
+
+def assertion(value: bytes):
+    assert value
+
+@online
+def resolver(values: list[int], other: list[int], value: bytes, byte_values: list[bytes]):
+    return (
+        expressions(values, other),
+        statements(values, other),
+        truthiness(value, byte_values),
+        assertion(value),
+    )
+"#;
+    let db = fixture_db(&[("features.py", source)]);
+    let file = system_path_to_file(&db, "/project/features.py").unwrap();
+    let diagnostics = chalk_diagnostics_for_file(&db, alignment_input(&db), file);
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| {
+                (
+                    &source[diagnostic.range],
+                    diagnostic
+                        .unsupported_function_details()
+                        .map(|details| details.targets[0].reason),
+                )
+            })
+            .collect::<Vec<_>>(),
+        [
+            ("values + other", Some(CallNoMatchReason::SignatureMismatch)),
+            ("values[1:]", Some(CallNoMatchReason::SignatureMismatch)),
+            ("values < other", Some(CallNoMatchReason::SignatureMismatch)),
+            ("values << other", None),
+            ("~values", None),
+            (
+                "values += other",
+                Some(CallNoMatchReason::SignatureMismatch)
+            ),
+            ("values <<= 1", None),
+            ("value", Some(CallNoMatchReason::SignatureMismatch)),
+            ("value", Some(CallNoMatchReason::SignatureMismatch)),
+            ("value", Some(CallNoMatchReason::SignatureMismatch)),
+            ("item", Some(CallNoMatchReason::SignatureMismatch)),
+            ("value", Some(CallNoMatchReason::SignatureMismatch)),
+        ]
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|diagnostic| matches!(
+                diagnostic.kind,
+                ty_chalk::ChalkDiagnosticKind::UnsupportedSyntax(_)
+            ))
+            .map(ty_chalk::ChalkDiagnostic::message)
+            .collect::<Vec<_>>(),
+        [
+            "Operator `<<` is not supported by the static accelerator",
+            "Operator `~` is not supported by the static accelerator",
+            "Operator `<<` is not supported by the static accelerator",
+        ]
+    );
+}
+
+#[test]
+fn registry_operations_follow_reachability_and_suppressions() {
+    let helpers = r#"
+def reachable(values: list[int]):
+    return values[1:]
+
+def unreachable(values: list[int]):
+    return values[1:]
+"#;
+    let resolver = r#"
+from chalk import online
+from helpers import reachable
+
+@online
+def resolver(values: list[int], other: list[int]):
+    reachable(values)
+    ignored = values + other  # chalk: ignore[unsupported-function]
+    return values[1:]  # chalk: ignore[unsupported-function]
+"#;
+    let db = fixture_db(&[("features.py", resolver), ("helpers.py", helpers)]);
+    let input = alignment_input(&db);
+    let mut diagnostics = Vec::new();
+    for file in input.python_files(&db) {
+        let source = source_text(&db, file);
+        diagnostics.extend(
+            chalk_diagnostics_for_file(&db, input, file)
+                .into_iter()
+                .map(|diagnostic| source[diagnostic.range].to_string()),
+        );
+    }
+
+    assert_eq!(diagnostics, ["values[1:]"]);
 }
