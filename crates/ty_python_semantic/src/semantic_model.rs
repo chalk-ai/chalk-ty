@@ -218,8 +218,10 @@ impl<'db> SemanticModel<'db> {
         let Some(ty) = node.value.inferred_type(self) else {
             return Vec::new();
         };
+        let mut members = all_members(self.db, ty);
+        crate::chalk::retain_feature_completion_members(self, &node.value, &mut members);
 
-        all_members(self.db, ty)
+        members
             .into_iter()
             .map(|member| Completion {
                 name: member.name,

@@ -7,6 +7,7 @@ use ruff_db::files::{File, FileRange};
 use ruff_db::parsed::parsed_module;
 use ruff_python_ast::{self as ast, name::Name};
 use ruff_text_size::{Ranged, TextRange};
+use rustc_hash::FxHashSet;
 use ty_module_resolver::{Module, ModuleName, file_to_module, resolve_module, resolve_real_module};
 use ty_python_core::ast_ids::HasScopedUseId;
 pub use ty_python_core::definition::Definition;
@@ -17,6 +18,7 @@ use ty_python_core::{BoundnessAnalysis, EnclosingSnapshotResult, semantic_index}
 
 use crate::place::{Definedness, Place};
 use crate::reachability::evaluate_reachability_with_cache;
+use crate::types::list_members::Member;
 use crate::types::{KnownBoundMethodType, Type, TypeDefinition, binding_type};
 use crate::{
     HasType, ImportAliasResolution, SemanticModel, definitions_for_attribute, definitions_for_name,
@@ -150,6 +152,43 @@ pub fn chalk_is_enum(db: &dyn crate::Db, ty: Type<'_>) -> ChalkClassRelation {
 /// Returns whether `ty` has a native structural shape that Chalk can treat as a logical struct.
 pub fn chalk_is_logical_struct(db: &dyn crate::Db, ty: Type<'_>) -> bool {
     ty.chalk_is_logical_struct(db)
+}
+
+/// Removes non-feature members when completing on a contextual Chalk `_` symbol.
+pub(crate) fn retain_feature_completion_members<'db>(
+    model: &SemanticModel<'db>,
+    expression: &ast::Expr,
+    members: &mut FxHashSet<Member<'db>>,
+) {
+    let Some(receiver) = chalk_feature_completion_receiver(model, expression) else {
+        return;
+    };
+    members.retain(|member| {
+        receiver
+            .chalk_instance_member(model.db(), member.name.as_str())
+            .is_some()
+    });
+}
+
+fn chalk_feature_completion_receiver<'db>(
+    model: &SemanticModel<'db>,
+    expression: &ast::Expr,
+) -> Option<Type<'db>> {
+    let ast::Expr::Name(name) = expression else {
+        return None;
+    };
+    let mut provenance = Vec::new();
+    if !directly_imported_symbols(model, name, &mut provenance)
+        || !provenance.iter().all(|candidate| {
+            candidate.module.as_str() == "chalk.features" && candidate.symbol == "_"
+        })
+    {
+        return None;
+    }
+    let receiver = expression.inferred_type(model)?;
+    receiver
+        .chalk_is_features_instance(model.db())
+        .then_some(receiver)
 }
 
 /// The kind of statically resolved definition targeted by a call.

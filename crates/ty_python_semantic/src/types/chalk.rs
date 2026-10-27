@@ -3,10 +3,10 @@ use ty_module_resolver::{Module, ModuleName, file_to_module, resolve_module};
 
 use super::class::{CodeGeneratorKind, FieldKind};
 use super::constraints::ConstraintSetBuilder;
-use super::generics::InferableTypeVars;
+use super::generics::{InferableTypeVars, Specialization};
 use super::instance::SynthesizedProtocolKind;
 use super::{
-    ClassBase, ClassType, DataclassFlags, KnownClass, SubclassOfInner, Type,
+    ClassBase, ClassType, DataclassFlags, KnownClass, StaticClassLiteral, SubclassOfInner, Type,
     TypeVarBoundOrConstraints,
 };
 use crate::chalk::{
@@ -20,6 +20,21 @@ const CHALK_FEATURES_MODULE: &str = "chalk.features";
 const CHALK_EXTENSIONS_MODULE: &str = "ty_chalk_extensions";
 
 impl<'db> Type<'db> {
+    fn chalk_features_instance_class(
+        self,
+        db: &'db dyn Db,
+    ) -> Option<(StaticClassLiteral<'db>, Option<Specialization<'db>>)> {
+        let (class, specialization) = self.nominal_class(db)?.static_class_literal(db)?;
+        class
+            .dataclass_params(db)
+            .is_some_and(|params| params.flags(db).contains(DataclassFlags::CHALK_FEATURES))
+            .then_some((class, specialization))
+    }
+
+    pub(crate) fn chalk_is_features_instance(self, db: &'db dyn Db) -> bool {
+        self.chalk_features_instance_class(db).is_some()
+    }
+
     pub(crate) fn chalk_type_shape(self, db: &'db dyn Db) -> ChalkTypeShape<'db> {
         match self {
             Type::Dynamic(_) => ChalkTypeShape::Dynamic,
@@ -674,18 +689,12 @@ impl<'db> Type<'db> {
         single_selected_type(db, self).is_some_and(|expected| actual.is_assignable_to(db, expected))
     }
 
-    pub(super) fn chalk_instance_member(
+    pub(crate) fn chalk_instance_member(
         self,
         db: &'db dyn Db,
         name: &str,
     ) -> Option<PlaceAndQualifiers<'db>> {
-        let (class, specialization) = self.nominal_class(db)?.static_class_literal(db)?;
-        if !class
-            .dataclass_params(db)
-            .is_some_and(|params| params.flags(db).contains(DataclassFlags::CHALK_FEATURES))
-        {
-            return None;
-        }
+        let (class, specialization) = self.chalk_features_instance_class(db)?;
 
         let field_policy = CodeGeneratorKind::from_class(db, class.into())?;
         let field = class.fields(db, specialization, field_policy).get(name)?;
