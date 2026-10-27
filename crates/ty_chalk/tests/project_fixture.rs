@@ -1254,6 +1254,41 @@ def resolver(values: list[int], other: list[int]):
 }
 
 #[test]
+fn registry_operations_treat_none_comparisons_as_null_checks() {
+    let source = r#"
+from chalk import online
+
+NONE = None
+
+@online
+def resolver(values: list[int] | None, other: list[int]):
+    return (
+        values != None,
+        None != values,
+        values == None,
+        None == values,
+        values != NONE,
+        NONE != values,
+        values == NONE,
+        NONE == values,
+        values == other,
+        values != other,
+    )
+"#;
+    let db = fixture_db(&[("features.py", source)]);
+    let file = system_path_to_file(&db, "/project/features.py").unwrap();
+    let diagnostics = chalk_diagnostics_for_file(&db, alignment_input(&db), file);
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| &source[diagnostic.range])
+            .collect::<Vec<_>>(),
+        ["values == other", "values != other"]
+    );
+}
+
+#[test]
 fn registry_operations_accept_accelerator_supported_signatures() {
     let source = r#"
 from chalk import online

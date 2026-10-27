@@ -1,7 +1,9 @@
 use ruff_python_ast as ast;
 use ruff_text_size::{Ranged, TextRange};
+use ty_python_semantic::Db;
+use ty_python_semantic::types::Type;
 
-/// One Python syntax operation lowered to the static accelerator's function registry.
+/// One Python syntax operation that may be lowered to the static accelerator's function registry.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RegistryOperation<'a> {
     pub(crate) range: TextRange,
@@ -37,9 +39,20 @@ impl<'a> RegistryOperation<'a> {
     fn truthiness(expression: &'a ast::Expr) -> Self {
         Self::unary(expression.range(), "__bool__", expression)
     }
+
+    /// Returns whether the accelerator handles this operation without consulting the registry.
+    pub(crate) fn bypasses_registry<'db>(
+        self,
+        db: &'db dyn Db,
+        receiver: Type<'db>,
+        argument: Option<Type<'db>>,
+    ) -> bool {
+        matches!(self.method, "__eq__" | "__neq__")
+            && (receiver.is_none(db) || argument.is_some_and(|ty| ty.is_none(db)))
+    }
 }
 
-/// Lowers the registry-backed operations performed by an expression.
+/// Identifies expression operations that may dispatch through the accelerator registry.
 pub(crate) fn expression_registry_operations(expression: &ast::Expr) -> Vec<RegistryOperation<'_>> {
     match expression {
         ast::Expr::BinOp(binary) => binary_method(binary.op)
@@ -74,7 +87,7 @@ pub(crate) fn expression_registry_operations(expression: &ast::Expr) -> Vec<Regi
     }
 }
 
-/// Lowers registry-backed operations that are expressed by statements rather than expressions.
+/// Identifies statement operations that may dispatch through the accelerator registry.
 pub(crate) fn statement_registry_operations(statement: &ast::Stmt) -> Vec<RegistryOperation<'_>> {
     match statement {
         ast::Stmt::AugAssign(assignment) if assignment.target.is_name_expr() => {
@@ -108,7 +121,7 @@ pub(crate) fn statement_registry_operations(statement: &ast::Stmt) -> Vec<Regist
     }
 }
 
-/// Lowers the truthiness checks applied to comprehension filters.
+/// Identifies the potential registry calls for comprehension-filter truthiness checks.
 pub(crate) fn comprehension_registry_operations(
     comprehension: &ast::Comprehension,
 ) -> impl Iterator<Item = RegistryOperation<'_>> {

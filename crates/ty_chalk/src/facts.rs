@@ -361,12 +361,14 @@ impl<'a, 'db> FactVisitor<'a, 'db> {
     ) -> Option<(CallMatchTarget<'db>, CallNoMatchReason)> {
         let receiver = operation.receiver.inferred_type(self.model)?;
         let argument = if let Some(argument) = operation.argument {
-            Some(ObservedArgument::Positional(
-                argument.inferred_type(self.model)?,
-            ))
+            Some(argument.inferred_type(self.model)?)
         } else {
             None
         };
+        if operation.bypasses_registry(self.model.db(), receiver, argument) {
+            return None;
+        }
+        let argument = argument.map(ObservedArgument::Positional);
         let CallMatch::NoMatch { target, reason } = match_call_target(
             self.model.db(),
             ObservedCall {
