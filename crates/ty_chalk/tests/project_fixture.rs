@@ -670,17 +670,25 @@ def resolver():
     let db = fixture_db(&[("features.py", source)]);
     let file = system_path_to_file(&db, "/project/features.py").unwrap();
     let diagnostics = chalk_diagnostics_for_file(&db, alignment_input(&db), file);
-    assert_eq!(diagnostics.len(), 2);
+    assert_eq!(diagnostics.len(), 3);
     assert_eq!(
-        diagnostics[0].kind,
-        ty_chalk::ChalkDiagnosticKind::HelperParameterDefault
+        diagnostics[0].message(),
+        "Nested function definitions are not supported by the static accelerator"
     );
-    assert_eq!(&source[diagnostics[0].range], "BUDGET");
+    assert_eq!(
+        &source[diagnostics[0].range],
+        "def nested(value=BUDGET):\n        return nested(value)"
+    );
     assert_eq!(
         diagnostics[1].kind,
+        ty_chalk::ChalkDiagnosticKind::HelperParameterDefault
+    );
+    assert_eq!(&source[diagnostics[1].range], "BUDGET");
+    assert_eq!(
+        diagnostics[2].kind,
         ty_chalk::ChalkDiagnosticKind::ResolverCycle
     );
-    assert_eq!(&source[diagnostics[1].range], "nested(value)");
+    assert_eq!(&source[diagnostics[2].range], "nested(value)");
 }
 
 #[test]
@@ -1393,6 +1401,211 @@ def resolver(value: int, values: list[int]):
                 "While statements are not supported by the static accelerator".to_owned(),
             ),
         ]
+    );
+}
+
+#[test]
+fn dictionary_unpacking_warns() {
+    let source = r#"
+from chalk import online
+
+@online
+def resolver(other: dict[str, int]):
+    unpacked = {**other}
+    mixed = {"a": 1, **other}
+    empty = {}
+    homogeneous = {"a": 1, "b": 2}
+    return unpacked, mixed, empty, homogeneous
+"#;
+    let db = fixture_db(&[("features.py", source)]);
+    let file = system_path_to_file(&db, "/project/features.py").unwrap();
+    let diagnostics = chalk_diagnostics_for_file(&db, alignment_input(&db), file);
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| (&source[diagnostic.range], diagnostic.message().into_owned()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "{**other}",
+                "Dictionary unpacking is not supported by the static accelerator".to_owned(),
+            ),
+            (
+                "{\"a\": 1, **other}",
+                "Dictionary unpacking is not supported by the static accelerator".to_owned(),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn complex_number_literals_warn() {
+    let source = r#"
+from chalk import online
+
+def helper():
+    return 2j
+
+@online
+def resolver():
+    imaginary = 1j
+    mixed = 1 + 2j
+    integer = 1
+    floating = 1.5
+    return imaginary, mixed, integer, floating, helper()
+"#;
+    let db = fixture_db(&[("features.py", source)]);
+    let file = system_path_to_file(&db, "/project/features.py").unwrap();
+    let diagnostics = chalk_diagnostics_for_file(&db, alignment_input(&db), file);
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| (&source[diagnostic.range], diagnostic.message().into_owned()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "2j",
+                "Complex number literals are not supported by the static accelerator".to_owned(),
+            ),
+            (
+                "1j",
+                "Complex number literals are not supported by the static accelerator".to_owned(),
+            ),
+            (
+                "1 + 2j",
+                "Call is not supported by the static accelerator".to_owned(),
+            ),
+            (
+                "2j",
+                "Complex number literals are not supported by the static accelerator".to_owned(),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn unsupported_expression_variants_warn() {
+    for (name, expression, expected) in [
+        ("walrus", "(item := value)", "Assignment expressions"),
+        ("await", "await value", "Await expressions"),
+        ("yield", "(yield value)", "Yield expressions"),
+        ("yield_from", "(yield from value)", "Yield-from expressions"),
+        ("ellipsis", "...", "Ellipsis literals"),
+        ("starred", "[*value]", "Starred expressions"),
+        ("unpacked call", "sum(*value)", "Starred expressions"),
+        ("template", "t\"{value}\"", "Template strings"),
+    ] {
+        let asynchronous = if name == "await" { "async " } else { "" };
+        let source = format!(
+            "from chalk import online\n@online\n{asynchronous}def resolver(value):\n    return {expression}\n"
+        );
+        let db = fixture_db(&[("features.py", &source)]);
+        let file = system_path_to_file(&db, "/project/features.py").unwrap();
+        let diagnostics = chalk_diagnostics_for_file(&db, alignment_input(&db), file);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message().starts_with(expected)),
+            "missing {expected} diagnostic for {name}: {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
+fn unsupported_statement_variants_warn() {
+    for (name, body, expected) in [
+        (
+            "nested function",
+            "def inner():\n        return 1",
+            "Nested function definitions",
+        ),
+        (
+            "nested async function",
+            "async def inner():\n        return 1",
+            "Nested function definitions",
+        ),
+        (
+            "nested class",
+            "class Inner:\n        pass",
+            "Class definitions",
+        ),
+        ("delete", "del value", "Delete statements"),
+        ("with", "with value:\n        pass", "With statements"),
+        (
+            "async with",
+            "async with value:\n        pass",
+            "With statements",
+        ),
+        (
+            "match",
+            "match value:\n        case _:\n            pass",
+            "Match statements",
+        ),
+        (
+            "async for",
+            "async for item in value:\n        pass",
+            "Async for statements",
+        ),
+        ("import", "import math", "Imports inside functions"),
+        (
+            "from import",
+            "from math import pi",
+            "Imports inside functions",
+        ),
+        ("global", "global value", "Global declarations"),
+        (
+            "type alias",
+            "type Alias = int",
+            "Type aliases inside functions",
+        ),
+    ] {
+        let source = format!(
+            "from chalk import online\n@online\nasync def resolver():\n    {body}\n    return 1\n"
+        );
+        let db = fixture_db(&[("features.py", &source)]);
+        let file = system_path_to_file(&db, "/project/features.py").unwrap();
+        let diagnostics = chalk_diagnostics_for_file(&db, alignment_input(&db), file);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message().starts_with(expected)),
+            "missing {expected} diagnostic for {name}: {diagnostics:?}"
+        );
+    }
+
+    let source = "from chalk import online\n@online\ndef resolver():\n    value = 1\n    def helper():\n        nonlocal value\n        return value\n    return helper()\n";
+    let db = fixture_db(&[("features.py", source)]);
+    let file = system_path_to_file(&db, "/project/features.py").unwrap();
+    let diagnostics = chalk_diagnostics_for_file(&db, alignment_input(&db), file);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message().starts_with("Nonlocal declarations"))
+    );
+}
+
+#[test]
+fn unsupported_syntax_respects_reachability() {
+    let source = r#"
+from chalk import online
+
+class TopLevel:
+    pass
+
+def unreachable():
+    return ...
+
+@online
+def resolver():
+    return 1
+"#;
+    let db = fixture_db(&[("features.py", source)]);
+    let file = system_path_to_file(&db, "/project/features.py").unwrap();
+    assert_eq!(
+        chalk_diagnostics_for_file(&db, alignment_input(&db), file),
+        []
     );
 }
 

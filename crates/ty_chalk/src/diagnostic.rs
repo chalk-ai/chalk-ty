@@ -66,11 +66,23 @@ impl ChalkDiagnostic {
             ) => Cow::Borrowed(
                 "Dictionary comprehensions are not supported by the static accelerator",
             ),
+            ChalkDiagnosticKind::UnsupportedSyntax(UnsupportedSyntaxKind::DictionaryUnpacking) => {
+                Cow::Borrowed("Dictionary unpacking is not supported by the static accelerator")
+            }
             ChalkDiagnosticKind::UnsupportedSyntax(
                 UnsupportedSyntaxKind::MultipleGeneratorListComprehension,
             ) => Cow::Borrowed(
                 "List comprehensions with multiple generators are not supported by the static accelerator",
             ),
+            ChalkDiagnosticKind::UnsupportedSyntax(UnsupportedSyntaxKind::ComplexNumberLiteral) => {
+                Cow::Borrowed("Complex number literals are not supported by the static accelerator")
+            }
+            ChalkDiagnosticKind::UnsupportedSyntax(
+                UnsupportedSyntaxKind::UnsupportedExpression(name)
+                | UnsupportedSyntaxKind::UnsupportedStatement(name),
+            ) => Cow::Owned(format!(
+                "{name} are not supported by the static accelerator"
+            )),
             ChalkDiagnosticKind::UnsupportedSyntax(UnsupportedSyntaxKind::Operator(operator)) => {
                 Cow::Owned(format!(
                     "Operator `{operator}` is not supported by the static accelerator"

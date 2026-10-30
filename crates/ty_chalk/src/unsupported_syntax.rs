@@ -7,7 +7,11 @@ use crate::registry_operations::{binary_method, unary_method};
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, salsa::Update, get_size2::GetSize)]
 pub enum UnsupportedSyntaxKind {
     DictionaryComprehension,
+    DictionaryUnpacking,
     MultipleGeneratorListComprehension,
+    ComplexNumberLiteral,
+    UnsupportedExpression(&'static str),
+    UnsupportedStatement(&'static str),
     Operator(&'static str),
     WhileStatement,
     ComplexAugmentedAssignmentTarget,
@@ -29,9 +33,30 @@ pub(crate) fn unsupported_expression(expression: &ast::Expr) -> Option<Unsupport
             UnsupportedSyntaxKind::Operator(unary.op.as_str())
         }
         ast::Expr::DictComp(_) => UnsupportedSyntaxKind::DictionaryComprehension,
+        ast::Expr::Dict(dictionary) if dictionary.items.iter().any(|item| item.key.is_none()) => {
+            UnsupportedSyntaxKind::DictionaryUnpacking
+        }
         ast::Expr::ListComp(comprehension) if comprehension.generators.len() > 1 => {
             UnsupportedSyntaxKind::MultipleGeneratorListComprehension
         }
+        ast::Expr::NumberLiteral(number) if matches!(number.value, ast::Number::Complex { .. }) => {
+            UnsupportedSyntaxKind::ComplexNumberLiteral
+        }
+        ast::Expr::Named(_) => {
+            UnsupportedSyntaxKind::UnsupportedExpression("Assignment expressions")
+        }
+        ast::Expr::Await(_) => UnsupportedSyntaxKind::UnsupportedExpression("Await expressions"),
+        ast::Expr::Yield(_) => UnsupportedSyntaxKind::UnsupportedExpression("Yield expressions"),
+        ast::Expr::YieldFrom(_) => {
+            UnsupportedSyntaxKind::UnsupportedExpression("Yield-from expressions")
+        }
+        ast::Expr::EllipsisLiteral(_) => {
+            UnsupportedSyntaxKind::UnsupportedExpression("Ellipsis literals")
+        }
+        ast::Expr::Starred(_) => {
+            UnsupportedSyntaxKind::UnsupportedExpression("Starred expressions")
+        }
+        ast::Expr::TString(_) => UnsupportedSyntaxKind::UnsupportedExpression("Template strings"),
         _ => return None,
     };
     Some(UnsupportedSyntax {
@@ -54,6 +79,50 @@ pub(crate) fn unsupported_statement(statement: &ast::Stmt) -> Option<Unsupported
         ast::Stmt::AugAssign(assignment) if binary_method(assignment.op).is_none() => (
             assignment.range,
             UnsupportedSyntaxKind::Operator(assignment.op.as_str()),
+        ),
+        ast::Stmt::FunctionDef(_) => (
+            statement.range(),
+            UnsupportedSyntaxKind::UnsupportedStatement("Nested function definitions"),
+        ),
+        ast::Stmt::ClassDef(_) => (
+            statement.range(),
+            UnsupportedSyntaxKind::UnsupportedStatement("Class definitions"),
+        ),
+        ast::Stmt::Delete(_) => (
+            statement.range(),
+            UnsupportedSyntaxKind::UnsupportedStatement("Delete statements"),
+        ),
+        ast::Stmt::With(_) => (
+            statement.range(),
+            UnsupportedSyntaxKind::UnsupportedStatement("With statements"),
+        ),
+        ast::Stmt::Match(_) => (
+            statement.range(),
+            UnsupportedSyntaxKind::UnsupportedStatement("Match statements"),
+        ),
+        ast::Stmt::For(for_statement) if for_statement.is_async => (
+            statement.range(),
+            UnsupportedSyntaxKind::UnsupportedStatement("Async for statements"),
+        ),
+        ast::Stmt::Import(_) => (
+            statement.range(),
+            UnsupportedSyntaxKind::UnsupportedStatement("Imports inside functions"),
+        ),
+        ast::Stmt::ImportFrom(_) => (
+            statement.range(),
+            UnsupportedSyntaxKind::UnsupportedStatement("Imports inside functions"),
+        ),
+        ast::Stmt::Global(_) => (
+            statement.range(),
+            UnsupportedSyntaxKind::UnsupportedStatement("Global declarations"),
+        ),
+        ast::Stmt::Nonlocal(_) => (
+            statement.range(),
+            UnsupportedSyntaxKind::UnsupportedStatement("Nonlocal declarations"),
+        ),
+        ast::Stmt::TypeAlias(_) => (
+            statement.range(),
+            UnsupportedSyntaxKind::UnsupportedStatement("Type aliases inside functions"),
         ),
         _ => return None,
     };
