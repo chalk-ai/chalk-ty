@@ -331,6 +331,7 @@ class User:
     alias(_.transactions[_.amount], reveal_type(_.shared))  # revealed: Resolved[str]
 
     # A non-relationship receiver and a dynamic receiver cannot establish a known row.
+    # error: [invalid-argument-type]
     F.max_by(Ordinary()[0], reveal_type(_.shared))  # revealed: Resolved[int]
     F.max_by(_.unknown[0], reveal_type(_.shared))  # revealed: Resolved[int]
 
@@ -456,6 +457,59 @@ class User:
 
     # The row scope does not leak past the call.
     reveal_type(_.shared)  # revealed: Resolved[int]
+```
+
+## Precise Chalk function signatures
+
+Projected relationship slices retain both their row and selected value types. Function and method
+spellings produce the same value types, including after a filtered slice or an alias. Array
+aggregations and conditionals carry those types into later expressions.
+
+```py
+import chalk.functions as F
+from chalk.features import DataFrame, _, features
+
+@features
+class Transaction:
+    amount: float
+    category: str
+    active: bool
+
+@features
+class User:
+    transactions: DataFrame[Transaction]
+    nickname: str | None
+
+    # The selected column type is checked against the feature's declared type.
+    # error: [invalid-assignment]
+    bad_categories: list[int] = F.array_agg(_.transactions[_.category])
+
+    selection = _.transactions[_.category]
+    reveal_type(selection)  # revealed: Resolved[ProjectedDataFrame[Transaction, str]]
+    reveal_type(F.max_by(selection, _.amount))  # revealed: Resolved[str]
+    reveal_type(selection.min_by(_.amount))  # revealed: Resolved[str]
+    reveal_type(F.max_by_n(selection, _.amount, 3))  # revealed: Resolved[list[str]]
+    reveal_type(selection.min_by_n(_.amount, 3))  # revealed: Resolved[list[str]]
+    reveal_type(F.min_by(_.transactions[_.active, _.amount], _.category))  # revealed: Resolved[int | float]
+    reveal_type(F.array_agg(selection))  # revealed: Resolved[list[str]]
+    reveal_type(selection.array_agg())  # revealed: Resolved[list[str]]
+    reveal_type(F.set_agg(selection))  # revealed: Resolved[list[str]]
+    reveal_type(selection.set_agg())  # revealed: Resolved[list[str]]
+    reveal_type(F.array_sum([1, 2, 3]))  # revealed: Resolved[int]
+    reveal_type(F.array_average([1, 2, 3]))  # revealed: Resolved[int | float]
+    reveal_type(F.coalesce(_.nickname, "anonymous"))  # revealed: Resolved[str]
+    reveal_type(_.nickname.coalesce("anonymous"))  # revealed: Resolved[str]
+    reveal_type(F.recover(_.nickname, "anonymous"))  # revealed: Resolved[str | None]
+    reveal_type(F.is_null(_.nickname))  # revealed: Resolved[bool]
+    reveal_type(_.nickname.is_not_null())  # revealed: Resolved[bool]
+    reveal_type(F.when(_.nickname.is_null()).then("missing").otherwise(_.nickname))  # revealed: Resolved[str | None]
+    decision = F.when(_.nickname.is_null()).then("missing").when(_.nickname.is_not_null()).then("present").otherwise("unknown")
+    reveal_type(decision)  # revealed: Resolved[str]
+
+    # error: [invalid-argument-type]
+    F.max_by(42, _.nickname)
+    # error: [invalid-argument-type]
+    F.max_by_n(selection, _.amount, "three")
 ```
 
 ## Grouped aggregation nesting and namespace restoration

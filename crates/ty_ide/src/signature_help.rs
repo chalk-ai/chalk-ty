@@ -268,6 +268,8 @@ fn create_parameters<'db>(
 
 #[cfg(test)]
 mod tests {
+    mod chalk;
+
     use insta::assert_snapshot;
 
     use crate::MarkupKind;

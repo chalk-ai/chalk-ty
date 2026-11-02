@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Refresh the vendored chalk.functions manifest and stub from chalkpy.
+"""Refresh vendored Chalk stubs and the function manifest from chalkpy.
 
 The selected Python interpreter must have the target chalkpy version installed.
 """
@@ -30,12 +30,11 @@ def main() -> None:
     vendored = scripts.parents[1] / "ty_vendored"
     functions = vendored / "chalk" / "functions"
     manifest = functions / "public_functions.txt"
-    stub = functions / "__init__.pyi"
 
     with tempfile.TemporaryDirectory() as temporary_directory:
         temporary = Path(temporary_directory)
         generated_manifest = temporary / manifest.name
-        generated_stub = temporary / stub.name
+        generated_vendored = temporary / "ty_vendored"
 
         with generated_manifest.open("w") as output:
             subprocess.run(
@@ -43,22 +42,32 @@ def main() -> None:
                 stdout=output,
                 check=True,
             )
+        for relative_path in (
+            "chalk/features/underscore.pyi",
+            "chalkdf/dataframe.pyi",
+            "ty_chalk_extensions/__init__.pyi",
+        ):
+            source = vendored / relative_path
+            destination = generated_vendored / relative_path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
         subprocess.run(
             [
                 sys.executable,
                 scripts / "generate_chalk_functions_stub.py",
                 generated_manifest,
-                stub,
-                "-o",
-                generated_stub,
+                "--vendored-root",
+                generated_vendored,
             ],
             check=True,
         )
 
         shutil.copyfile(generated_manifest, manifest)
-        shutil.copyfile(generated_stub, stub)
+        for generated_stub in generated_vendored.rglob("*.pyi"):
+            destination = vendored / generated_stub.relative_to(generated_vendored)
+            shutil.copyfile(generated_stub, destination)
 
-    print(f"Updated {manifest.relative_to(vendored)} and {stub.relative_to(vendored)}")
+    print(f"Updated {manifest.relative_to(vendored)} and Chalk stubs")
 
 
 if __name__ == "__main__":
