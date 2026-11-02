@@ -1,31 +1,30 @@
+use std::collections::HashSet;
+
 #[test]
 fn public_chalk_functions_match_generated_stub() {
-    const PRECISE_DECLARATIONS: &[&str] =
-        &["if_then_else", "max_by", "max_by_n", "min_by", "min_by_n"];
-
-    let expected = include_str!("../chalk/functions/public_functions.txt")
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .filter(|name| !PRECISE_DECLARATIONS.contains(name))
-        .collect::<Vec<_>>();
+    let precise_stub = include_str!("../../ty_chalk/scripts/chalk_functions_precise.pyi");
     let stub = include_str!("../chalk/functions/__init__.pyi");
-    let (_, generated) = stub
-        .split_once("# BEGIN GENERATED CHALK FUNCTIONS")
-        .expect("generated Chalk functions block to start");
-    let (generated, _) = generated
-        .split_once("# END GENERATED CHALK FUNCTIONS")
-        .expect("generated Chalk functions block to end");
-    let actual = generated
+    let precise = precise_stub
         .lines()
         .filter_map(|line| line.strip_prefix("def "))
         .map(|declaration| {
             declaration
                 .split_once('(')
-                .expect("generated declaration to be a function")
+                .expect("precise declaration to be a function")
                 .0
         })
-        .collect::<Vec<_>>();
+        .collect::<HashSet<_>>();
+    let generated = include_str!("../chalk/functions/public_functions.txt")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter(|name| !precise.contains(name))
+        .map(|name| format!("def {name}(*args: Any, **kwargs: Any) -> Any: ..."))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let expected = format!(
+        "{precise_stub}\n# BEGIN GENERATED CHALK FUNCTIONS\n{generated}\n\n# END GENERATED CHALK FUNCTIONS\n\ndef __getattr__(name: str) -> Any: ...\n"
+    );
 
-    assert_eq!(actual, expected);
+    assert_eq!(stub, expected);
 }

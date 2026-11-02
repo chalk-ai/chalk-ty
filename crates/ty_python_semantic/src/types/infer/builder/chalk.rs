@@ -464,16 +464,25 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
         let db = self.db();
         let dataframe = self
             .chalk_features_symbol("DataFrame")?
-            .as_class_literal()?;
+            .as_class_literal()?
+            .as_static()?;
         let mut inner = receiver_ty.chalk_symbolic_inner(db)?;
         while let Some(nested) = inner.chalk_symbolic_inner(db) {
             inner = nested;
         }
-        let packed = inner
-            .specialization_of(db, dataframe.as_static()?)?
-            .types(db)
-            .first()
-            .copied()?;
+        let specialization = inner
+            .nominal_class(db)?
+            .iter_mro(db)
+            .filter_map(|base| base.into_class())
+            .filter_map(|class| class.static_class_literal(db))
+            .find_map(|(class, specialization)| {
+                if class == dataframe {
+                    specialization
+                } else {
+                    None
+                }
+            })?;
+        let packed = *specialization.types(db).first()?;
         let packed = packed.exact_tuple_instance_spec(db)?;
         let Tuple::Fixed(arguments) = packed.as_ref() else {
             return None;

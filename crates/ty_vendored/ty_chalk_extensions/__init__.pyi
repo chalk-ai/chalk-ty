@@ -1,12 +1,33 @@
+# BEGIN GENERATED CHALK RESOLVED IMPORTS
 from typing import Any, Generic, TypeVar, overload
 
 from chalk.features.underscore import Underscore
 from chalk.streams import Windowed as _ChalkWindowed
+from chalkdf.dataframe import DataFrame, ProjectedDataFrame
 
 _T_co = TypeVar("_T_co", covariant=True)
+_Row = TypeVar("_Row")
+_Selection = TypeVar("_Selection")
+# END GENERATED CHALK RESOLVED IMPORTS
 
 class Resolved(Underscore, Generic[_T_co]):
+    # BEGIN GENERATED CHALK RESOLVED GETITEM
+    @overload
+    def __getitem__(
+        self: Resolved[DataFrame[_Row]], key: Resolved[bool]
+    ) -> Resolved[DataFrame[_Row]]: ...
+    @overload
+    def __getitem__(
+        self: Resolved[DataFrame[_Row]], key: Resolved[_Selection]
+    ) -> Resolved[ProjectedDataFrame[_Row, _Selection]]: ...
+    @overload
+    def __getitem__(
+        self: Resolved[DataFrame[_Row]],
+        key: tuple[Resolved[bool], Resolved[_Selection]],
+    ) -> Resolved[ProjectedDataFrame[_Row, _Selection]]: ...
+    @overload
     def __getitem__(self, key: Any) -> Resolved[_T_co]: ...
+    # END GENERATED CHALK RESOLVED GETITEM
     def __add__(self, other: _T_co | Resolved[_T_co]) -> Resolved[_T_co]: ...
     def __radd__(self, other: _T_co | Resolved[_T_co]) -> Resolved[_T_co]: ...
     def __sub__(self, other: _T_co | Resolved[_T_co]) -> Resolved[_T_co]: ...
