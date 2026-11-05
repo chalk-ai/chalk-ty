@@ -442,6 +442,7 @@ pub(crate) fn server_capabilities(
         ),
         type_definition_provider: Some(true.into()),
         definition_provider: Some(true.into()),
+        implementation_provider: Some(true.into()),
         declaration_provider: Some(true.into()),
         references_provider: Some(true.into()),
         rename_provider: Some(server_rename_options().into()),

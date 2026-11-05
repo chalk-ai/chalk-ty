@@ -7,7 +7,7 @@ use ruff_python_ast::visitor::source_order::{
 };
 use ruff_python_ast::{self as ast};
 use ruff_text_size::{Ranged, TextRange};
-use ty_python_semantic::chalk::{CallTarget, Definition, ModuleOrigin};
+use ty_python_semantic::chalk::{CallTarget, Definition};
 use ty_python_semantic::{Db, HasDefinition, HasType, SemanticModel};
 
 use crate::CallNoMatchReason;
@@ -19,6 +19,7 @@ use crate::registry_operations::{
     RegistryOperation, comprehension_registry_operations, expression_registry_operations,
     statement_registry_operations,
 };
+use crate::resolvers::resolver_function_ranges;
 use crate::suppression::{SuppressionCode, SuppressionProblem, Suppressions, extract_suppressions};
 use crate::unsupported_syntax::{
     UnsupportedSyntax, UnsupportedSyntaxKind, unsupported_expression, unsupported_statement,
@@ -28,7 +29,6 @@ use crate::unsupported_syntax::{
 #[derive(Clone, Debug, Eq, PartialEq, salsa::Update, get_size2::GetSize)]
 pub(crate) struct ResolverRootFact<'db> {
     pub(crate) definition: Definition<'db>,
-    pub(crate) range: TextRange,
     pub(crate) parameter_defaults: Box<[TextRange]>,
     /// The exact statement-level directive on the resolver definition, if any.
     pub(crate) unsupported_function_statement_suppression: Option<TextRange>,
@@ -86,6 +86,7 @@ fn extract_file_facts(db: &dyn Db, file: File) -> FileFacts<'_> {
     let mut visitor = FactVisitor {
         model: &model,
         suppressions: &suppressions,
+        resolver_ranges: resolver_function_ranges(db, file),
         caller: None,
         statement: None,
         resolver_roots: Vec::new(),
@@ -135,6 +136,7 @@ pub(crate) fn file_facts(db: &dyn Db, file: File) -> Option<FileFacts<'_>> {
 struct FactVisitor<'a, 'db> {
     model: &'a SemanticModel<'db>,
     suppressions: &'a Suppressions<'db>,
+    resolver_ranges: &'a [TextRange],
     caller: Option<Definition<'db>>,
     statement: Option<TextRange>,
     resolver_roots: Vec<ResolverRootFact<'db>>,
@@ -147,14 +149,13 @@ impl<'a, 'db> FactVisitor<'a, 'db> {
     fn visit_function(&mut self, function: &'a ast::StmtFunctionDef) {
         let definition = function.definition(self.model);
 
-        if function
-            .decorator_list
-            .iter()
-            .any(|decorator| self.is_resolver_decorator(decorator))
+        if self
+            .resolver_ranges
+            .binary_search_by_key(&function.start(), Ranged::start)
+            .is_ok()
         {
             self.resolver_roots.push(ResolverRootFact {
                 definition,
-                range: function.range,
                 parameter_defaults: function
                     .parameters
                     .iter_non_variadic_params()
@@ -193,35 +194,6 @@ impl<'a, 'db> FactVisitor<'a, 'db> {
                 unsupported_function_statement_suppression: self
                     .statement_suppression(function.range),
             });
-        }
-    }
-
-    fn is_resolver_decorator(&self, decorator: &ast::Decorator) -> bool {
-        let provenance = self.model.chalk_decorator_provenance(decorator);
-
-        if !provenance.definitions.is_empty() {
-            !provenance.has_unresolved
-                && provenance.definitions.iter().all(|definition| {
-                    self.model
-                        .chalk_decorator_definition_origin(*definition)
-                        .is_some_and(|origin| {
-                            is_baked_resolver_origin(
-                                origin.ownership_origin,
-                                origin.module.as_ref(),
-                                origin.symbol.as_str(),
-                            )
-                        })
-                })
-        } else {
-            provenance.module_fallback_is_complete
-                && !provenance.modules.is_empty()
-                && provenance.modules.iter().all(|origin| {
-                    is_baked_resolver_origin(
-                        origin.ownership_origin,
-                        origin.module.as_ref(),
-                        origin.symbol.as_str(),
-                    )
-                })
         }
     }
 
@@ -476,23 +448,6 @@ fn supported_helper_default(expression: &ast::Expr) -> bool {
     }
 }
 
-fn is_baked_resolver_origin(origin: ModuleOrigin, module: &str, symbol: &str) -> bool {
-    if origin != ModuleOrigin::ThirdParty {
-        return false;
-    }
-
-    match module {
-        "chalk.features.resolver" | "chalk.features" => {
-            matches!(symbol, "online" | "offline" | "resolver")
-        }
-        "chalk" => matches!(
-            symbol,
-            "online" | "offline" | "resolver" | "batch" | "realtime"
-        ),
-        _ => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use ruff_db::Db as _;
@@ -510,7 +465,7 @@ mod tests {
 
     use crate::CallNoMatchReason;
 
-    use super::{extract_file_facts, is_baked_resolver_origin};
+    use super::extract_file_facts;
 
     fn setup(main: &str, files: &[(&str, &str)]) -> (TestDb, ruff_db::files::File) {
         setup_with_search_paths(
@@ -748,17 +703,6 @@ def root(): pass
                 extract_file_facts(&db, file).resolver_roots.is_empty(),
                 "{label}"
             );
-        }
-
-        for origin in [
-            ty_python_semantic::chalk::ModuleOrigin::StandardLibrary,
-            ty_python_semantic::chalk::ModuleOrigin::FirstParty,
-            ty_python_semantic::chalk::ModuleOrigin::Extra,
-            ty_python_semantic::chalk::ModuleOrigin::Namespace,
-            ty_python_semantic::chalk::ModuleOrigin::Unresolved,
-            ty_python_semantic::chalk::ModuleOrigin::Other,
-        ] {
-            assert!(!is_baked_resolver_origin(origin, "chalk", "online"));
         }
     }
 

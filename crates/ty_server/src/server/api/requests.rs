@@ -25,6 +25,8 @@ mod goto_declaration;
 mod goto_definition;
 mod goto_type_definition;
 mod hover;
+#[path = "requests/chalk/implementation.rs"]
+mod implementation;
 mod inlay_hints;
 mod prepare_call_hierarchy;
 mod prepare_rename;
@@ -54,6 +56,7 @@ pub(super) use goto_declaration::GotoDeclarationRequestHandler;
 pub(super) use goto_definition::GotoDefinitionRequestHandler;
 pub(super) use goto_type_definition::GotoTypeDefinitionRequestHandler;
 pub(super) use hover::HoverRequestHandler;
+pub(super) use implementation::ImplementationRequestHandler;
 pub(super) use inlay_hints::InlayHintRequestHandler;
 pub(super) use prepare_call_hierarchy::PrepareCallHierarchyRequestHandler;
 pub(super) use prepare_rename::PrepareRenameRequestHandler;

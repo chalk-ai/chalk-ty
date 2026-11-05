@@ -34,6 +34,8 @@ mod completions;
 mod configuration;
 mod folding_range;
 mod hover;
+#[path = "chalk/implementation.rs"]
+mod implementation;
 mod initialize;
 mod inlay_hints;
 mod notebook;
