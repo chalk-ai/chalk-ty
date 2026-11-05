@@ -7,9 +7,11 @@ mod active_project;
 mod call_matcher;
 mod diagnostic;
 mod facts;
+mod feature_resolvers;
 mod project;
 mod reachability;
 mod registry_operations;
+mod resolvers;
 mod supported_functions;
 mod suppression;
 mod type_matcher;
@@ -21,5 +23,6 @@ pub use diagnostic::{
     ChalkDiagnostic, ChalkDiagnosticKind, ChalkDiagnosticSeverity, UnsupportedFunctionDetails,
     UnsupportedTargetDetail, chalk_diagnostics_for_file,
 };
+pub use feature_resolvers::feature_resolvers;
 pub use project::{ChalkProject, ChalkProjectError, discover_chalk_project};
 pub use unsupported_syntax::UnsupportedSyntaxKind;
